@@ -178,6 +178,23 @@ class Diffusion(L.LightningModule):
 
     if self.ema:
       self.ema.load_state_dict(checkpoint['ema'])
+      current_parameters = [
+        (name, parameter) for name, parameter in self.named_parameters()
+        if parameter.requires_grad]
+      if len(self.ema.shadow_params) != len(current_parameters):
+        old_shadow_params = iter(self.ema.shadow_params)
+        migrated_shadow_params = []
+        for name, parameter in current_parameters:
+          if name.endswith('step_memory_gate'):
+            migrated_shadow_params.append(parameter.detach().clone())
+          else:
+            migrated_shadow_params.append(next(old_shadow_params))
+        try:
+          next(old_shadow_params)
+          raise RuntimeError('Unexpected extra EMA parameters in checkpoint')
+        except StopIteration:
+          pass
+        self.ema.shadow_params = migrated_shadow_params
     if 'sampling_eps_min' in checkpoint.keys():
       self.sampling_eps_min = checkpoint['sampling_eps_min']
       self.sampling_eps_max = checkpoint['sampling_eps_max']
@@ -318,14 +335,29 @@ class Diffusion(L.LightningModule):
     assert sigma.ndim == 1, sigma.shape
     return sigma
 
-  def forward(self, x, sigma, sample_mode=False, store_kv=False):
+  def forward(self, x, sigma, sample_mode=False, store_kv=False,
+              previous_step_qkv=None, return_step_qkv=False):
     """Returns log score."""
     sigma = self._process_sigma(sigma)
     with torch.amp.autocast('cuda', dtype=torch.float32):
       if self.config.algo.name == 'bd3lm':
-        logits = self.backbone(x, sigma,
-                              store_kv=store_kv,
-                              sample_mode=sample_mode)
+        if self.config.algo.backbone == 'hf_dit':
+          if previous_step_qkv is not None or return_step_qkv:
+            raise NotImplementedError(
+              'step_memory is currently implemented for the native dit backbone')
+          backbone_output = self.backbone(
+            x, sigma, store_kv=store_kv, sample_mode=sample_mode)
+        else:
+          backbone_output = self.backbone(
+            x, sigma,
+            store_kv=store_kv,
+            sample_mode=sample_mode,
+            previous_step_qkv=previous_step_qkv,
+            return_step_qkv=return_step_qkv)
+        if return_step_qkv:
+          logits, next_step_qkv = backbone_output
+        else:
+          logits = backbone_output
       elif self.config.algo.name == 'ar':
         if self.config.algo.backbone == 'hf_dit':
           logits = self.backbone(x, None)     
@@ -339,13 +371,14 @@ class Diffusion(L.LightningModule):
     if self.cross_attn:
       x = x[:, :self.config.model.length]
     if self.parameterization == 'subs':
-      return self._subs_parameterization(logits=logits,
-                                      xt=x)
+      scores = self._subs_parameterization(logits=logits, xt=x)
     elif self.parameterization == 'sedd':
-      return self._sedd_parameterization(logits=logits,
-                                        xt=x,
-                                        sigma=sigma)
-    return logits
+      scores = self._sedd_parameterization(logits=logits, xt=x, sigma=sigma)
+    else:
+      scores = logits
+    if return_step_qkv:
+      return scores, next_step_qkv
+    return scores
     
   def on_train_epoch_start(self):
     self.backbone.train()
@@ -556,7 +589,8 @@ class Diffusion(L.LightningModule):
     return p_x0
 
   @torch.no_grad()
-  def _ddpm_caching_update(self, x, t, dt, p_x0=None):
+  def _ddpm_caching_update(self, x, t, dt, p_x0=None,
+                           previous_step_qkv=None):
     _, move_chance_t = self.noise(t)
     _, move_chance_s = self.noise(t - dt)
     sigma_t = self._sigma_from_p(move_chance_t)
@@ -564,15 +598,25 @@ class Diffusion(L.LightningModule):
     move_chance_s = move_chance_s[:, None]
     mask_prob = move_chance_s / move_chance_t
 
+    next_step_qkv = previous_step_qkv
     if p_x0 is None:
+      use_step_memory = self.config.step_memory.enabled
       if self.config.sampling.kv_cache:
-        p_x0 = self.forward(x[:, -self.block_size:],
-                        sigma_t,
-                        sample_mode=True).to(torch.float64)
+        model_output = self.forward(
+          x[:, -self.block_size:], sigma_t, sample_mode=True,
+          previous_step_qkv=previous_step_qkv if use_step_memory else None,
+          return_step_qkv=use_step_memory)
       else:   
-        p_x0 = self.forward(x,
-                          sigma_t,
-                          sample_mode=True).to(torch.float64)
+        model_output = self.forward(
+          x, sigma_t, sample_mode=True,
+          previous_step_qkv=previous_step_qkv if use_step_memory else None,
+          return_step_qkv=use_step_memory)
+      if use_step_memory:
+        p_x0, next_step_qkv = model_output
+      else:
+        p_x0 = model_output
+      p_x0 = p_x0.to(torch.float64)
+      if not self.config.sampling.kv_cache:
         p_x0 = p_x0[:, -self.block_size:]
       p_x0 = p_x0.exp()
       p_x0 = self._nucleus_sample(p_x0)
@@ -598,9 +642,9 @@ class Diffusion(L.LightningModule):
       _ = self.forward(x_block, sigma_t, sample_mode=True, store_kv=True)
 
     if not torch.allclose(x_new, x):
-      return None, x_new
+      return None, x_new, next_step_qkv
     else:
-      return p_x0, x_new
+      return p_x0, x_new, next_step_qkv
 
   @torch.no_grad()
   def _ar_sampler(self, bsz, context_len=1024):
@@ -996,6 +1040,9 @@ class Diffusion(L.LightningModule):
       self.backbone.reset_kv_cache(eval_batch_size=self.config.loader.eval_batch_size)
 
     for stride_num in tqdm(range(num_strides)):
+      # Step memory is local to one active block. Completed-block cache has a
+      # separate lifetime and is intentionally not reset here.
+      previous_step_qkv = None
       # sample next block
       if stride_num == 0:
         x_accum = self._sample_prior(n_samples, self.block_size).to(self.device)
@@ -1031,11 +1078,12 @@ class Diffusion(L.LightningModule):
         elif not self.config.sampling.first_hitting:
           t = timesteps[i]
 
-        p_x0_cache, x_next = self._ddpm_caching_update(
+        p_x0_cache, x_next, previous_step_qkv = self._ddpm_caching_update(
             x=x_accum[:, fwd_idx],
             t=t * ones,
             dt=dt,
-            p_x0=p_x0_cache,)
+            p_x0=p_x0_cache,
+            previous_step_qkv=previous_step_qkv)
         if p_x0_cache is None:
           sampling_steps += 1
        

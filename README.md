@@ -1,4 +1,33 @@
-# [Block Diffusion: Interpolating Between Autoregressive and Diffusion Language Models](https://arxiv.org/abs/2503.09573) (ICLR 2025 Oral)
+# dc-test: Recurrent Denoising Cache Experiments
+
+This is a private research prototype investigating recurrent QKV memory across
+denoising evaluations in Block Diffusion language models. The current first
+stage keeps the original BD3-LM architecture and objective, adds a separate
+previous-denoising memory-attention branch, and deliberately defers hybrid
+autoregressive/causal layers.
+
+Start with:
+
+- [`PROJECT_SERVER_HANDOFF.md`](PROJECT_SERVER_HANDOFF.md) for the complete
+  research story, current implementation state, hardware guidance, and next
+  tasks;
+- [`bd3_denoising_kv_research_plan.md`](bd3_denoising_kv_research_plan.md) for
+  the detailed original research plan.
+
+## Attribution and relationship to BD3-LM
+
+This codebase is derived primarily from the official
+[`kuleshov-group/bd3lms`](https://github.com/kuleshov-group/bd3lms)
+implementation of *Block Diffusion: Interpolating Between Autoregressive and
+Diffusion Language Models*. It is a standalone experimental repository, not an
+official BD3-LM release and not maintained or endorsed by the original BD3-LM
+authors. The upstream authorship information and documentation are retained
+below. The repository continues to use the upstream Apache License 2.0 in
+[`LICENSE`](LICENSE).
+
+## Upstream BD3-LM documentation
+
+### [Block Diffusion: Interpolating Between Autoregressive and Diffusion Language Models](https://arxiv.org/abs/2503.09573) (ICLR 2025 Oral)
 By [Marianne Arriola](https://m-arriola.com/), [Aaron Gokaslan](https://skylion007.github.io), [Justin T Chiu](https://justinchiu.netlify.app), [Zhihan Yang](https://zhihanyang2022.github.io/), [Zhixuan Qi](https://zhixuanqi.com/), [Jiaqi Han](https://hanjq17.github.io/), [Subham Sekhar Sahoo](https://s-sahoo.github.io), [Volodymyr Kuleshov](https://www.cs.cornell.edu/~kuleshov/)
 
 <!-- [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/18nC6q7dWq154fI1BXPLwmtnS7Zvbrv6p?usp=sharing/) -->

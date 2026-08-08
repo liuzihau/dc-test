@@ -177,7 +177,9 @@ def _train(config, logger, tokenizer):
           config.training.from_pretrained,
           trust_remote_code=True
       ).state_dict()
-      model.load_state_dict(state_dict)
+      # Recurrent step-memory gates are absent from vanilla BD3 checkpoints
+      # and are initialized by the model (zero by default).
+      model.load_state_dict(state_dict, strict=False)
     else:
       model = diffusion.Diffusion.load_from_checkpoint(
         config.training.from_pretrained,

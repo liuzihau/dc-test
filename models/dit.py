@@ -466,6 +466,11 @@ class DDiTBlock(nn.Module):
       self.adaLN_modulation.bias.data.zero_()
     self.attn_backend = attn_backend
 
+    # This gate is enabled by DIT after construction. Keeping it on every
+    # non-causal block makes vanilla checkpoints easy to extend with
+    # strict=False while a zero gate preserves the original function.
+    self.step_memory_gate = nn.Parameter(torch.zeros(n_heads))
+
   def _get_bias_dropout_scale(self):
     if self.training:
       return bias_dropout_add_scale_fused_train
@@ -546,6 +551,20 @@ class DDiTBlock(nn.Module):
     x = rearrange(x, 'b h s d -> b s (h d)')
     return x
 
+  def step_memory_attn(self, current_qkv, previous_step_qkv):
+    """Attend from current active-block queries to previous-step K/V."""
+    active_len = previous_step_qkv.shape[1]
+    current_q = current_qkv[:, -active_len:, 0].transpose(1, 2)
+    previous_k = previous_step_qkv[:, :, 1].transpose(1, 2)
+    previous_v = previous_step_qkv[:, :, 2].transpose(1, 2)
+    memory = F.scaled_dot_product_attention(
+      current_q, previous_k, previous_v,
+      is_causal=False,
+      scale=1 / math.sqrt(current_q.shape[-1]))
+    gate = torch.tanh(self.step_memory_gate)[None, :, None, None]
+    memory = gate * memory
+    return rearrange(memory.transpose(1, 2), 'b s h d -> b s (h d)')
+
   def forward(self,
               x,
               rotary_cos_sin,
@@ -553,7 +572,9 @@ class DDiTBlock(nn.Module):
               causal=False,
               mask=None,
               sample_mode=False,
-              store_kv=False):
+              store_kv=False,
+              previous_step_qkv=None,
+              return_step_qkv=False):
     batch_size, seq_len = x.shape[0], x.shape[1]
 
     shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = None, None, None, None, None, None
@@ -579,6 +600,10 @@ class DDiTBlock(nn.Module):
       qkv = torch.cat((qkv_x, qkv_x0), dim=1)
     else:
       qkv = self.get_qkv(x, rotary_cos_sin, store_kv=store_kv)
+
+    # Only the active block is recurrent memory. The earlier portion of qkv,
+    # when present, belongs to the independent completed-block cache.
+    next_step_qkv = qkv[:, -self.block_size:]
       
     # attention
     if self.attn_backend == 'flash_attn' and mask is None:
@@ -597,7 +622,16 @@ class DDiTBlock(nn.Module):
       raise ValueError('Unknown attention backend')
     if self.kv_cache is not None:
       x = x[:, -self.block_size:]
+    if previous_step_qkv is not None:
+      memory_x = self.step_memory_attn(qkv, previous_step_qkv)
+      if x.shape[1] == memory_x.shape[1]:
+        x = x + memory_x
+      else:
+        x = torch.cat((x[:, :-memory_x.shape[1]],
+                       x[:, -memory_x.shape[1]:] + memory_x), dim=1)
     x = self.attn_mlp(x, c, gate_msa, gate_mlp, shift_mlp, scale_mlp, x_skip)
+    if return_step_qkv:
+      return x, next_step_qkv
     return x
    
 class EmbeddingLayer(nn.Module):
@@ -688,6 +722,11 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
           max_seqlen=self.max_seqlen)
       blocks.append(block)
     self.blocks = nn.ModuleList(blocks)
+    step_memory_config = getattr(config, 'step_memory', {})
+    gate_init = float(getattr(step_memory_config, 'gate_init', 0.0))
+    for block in self.blocks:
+      if hasattr(block, 'step_memory_gate'):
+        nn.init.constant_(block.step_memory_gate, gate_init)
     self.output_layer = DDiTFinalLayer(
       hidden_size=dim,
       out_channels=vocab_size,
@@ -726,7 +765,8 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         dtype=torch.bfloat16)
       block.cache_idx = 0
 
-  def forward(self, indices, sigma, sample_mode=False, store_kv=False):
+  def forward(self, indices, sigma, sample_mode=False, store_kv=False,
+              previous_step_qkv=None, return_step_qkv=False):
     x = self.vocab_embed(indices)
     if sigma is None:
       t_cond = None
@@ -760,16 +800,27 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
       mask = None
 
     with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+      next_step_qkv = [] if return_step_qkv else None
       for i in range(len(self.blocks)):
-        x = self.blocks[i](
+        block_output = self.blocks[i](
           x,
           rotary_cos_sin,
           c=t_cond,
           causal=self.causal,
           sample_mode=sample_mode,
           mask=mask,
-          store_kv=store_kv)
+          store_kv=store_kv,
+          previous_step_qkv=(
+            previous_step_qkv[i] if previous_step_qkv is not None else None),
+          return_step_qkv=return_step_qkv)
+        if return_step_qkv:
+          x, layer_step_qkv = block_output
+          next_step_qkv.append(layer_step_qkv)
+        else:
+          x = block_output
       x = self.output_layer(x, t_cond)
     if cross_attn and not sample_mode:
       x = x[:, :self.n]
+    if return_step_qkv:
+      return x, next_step_qkv
     return x

@@ -33,6 +33,13 @@ sampling:
   first_hitting: True # should be set to true when T >> block_size
   kv_cache: False
 
+# Recurrent memory from the immediately preceding denoiser evaluation.
+# This is independent of sampling.kv_cache, which stores completed blocks.
+step_memory:
+  enabled: False
+  gate_init: 0.0
+  detach_between_steps: False
+
 training:
   ema: 0.9999
   antithetic_sampling: True
