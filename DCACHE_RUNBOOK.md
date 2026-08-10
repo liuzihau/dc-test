@@ -153,20 +153,27 @@ rsync -a --exclude .git --exclude outputs --exclude .cache \
   /home/tliu0205/dc-test/ USER@GPU4090_HOST:/path/to/dc-test/
 ```
 
-If the machines do not share the prepared data cache, copy it separately:
+If the machines do not share the prepared data cache, copy only the two
+prepared datasets (about 68 GiB total), rather than the entire Hugging Face
+cache:
 
 ```bash
-rsync -a --info=progress2 /home/tliu0205/dc-test/.cache/huggingface/ \
+rsync -a --partial --info=progress2 \
+  /home/tliu0205/dc-test/.cache/huggingface/openwebtext-train_train_bs1024_wrapped_specialFalse.dat \
+  /home/tliu0205/dc-test/.cache/huggingface/openwebtext-valid_validation_bs1024_wrapped_specialFalse.dat \
   USER@GPU4090_HOST:/path/to/dc-test/.cache/huggingface/
 ```
 
 The setup script creates or updates the `dcache` environment, checks the pinned
 dependencies, confirms that two CUDA GPUs and BF16 are available, and reports
 whether the prepared OpenWebText cache exists. It does not hide a missing data
-cache: the first training run otherwise downloads and preprocesses roughly
-243 GiB on the current installation. Copying `.cache/huggingface` to the second
-server, or setting `DCACHE_DATA_DIR` to an existing shared copy, avoids that
-large preparation step.
+cache: the first training run otherwise downloads and preprocesses the full
+raw dataset. Copying the two prepared datasets above, or setting
+`DCACHE_DATA_DIR` to an existing shared copy, avoids that preparation step.
+
+The 5k launchers keep only `last.ckpt` and the validation-selected `best.ckpt`.
+For DCache these consume roughly 6.4 GB together, instead of roughly 38 GB for
+all ten numbered checkpoints plus `last` and `best`.
 
 Each run validates on 100 fixed batches every 500 optimizer steps. The RNG is
 isolated and deterministically seeded, so the vanilla state and DCache `s`

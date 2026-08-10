@@ -11,6 +11,7 @@ MAX_STEPS="${DCACHE_MAX_STEPS:-100000}"
 VAL_INTERVAL="${DCACHE_VAL_INTERVAL:-10000}"
 VAL_BATCHES="${DCACHE_VAL_BATCHES:-1.0}"
 SANITY_VAL_STEPS="${DCACHE_SANITY_VAL_STEPS:-2}"
+CHECKPOINT_SAVE_TOP_K="${DCACHE_CHECKPOINT_SAVE_TOP_K:--1}"
 PYTHON_BIN="${DCACHE_PYTHON:-python}"
 
 mkdir -p "$DATA_DIR" "$RUN_DIR"
@@ -37,6 +38,7 @@ export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
   trainer.val_check_interval="$VAL_INTERVAL" \
   trainer.limit_val_batches="$VAL_BATCHES" \
   trainer.num_sanity_val_steps="$SANITY_VAL_STEPS" \
+  callbacks.checkpoint_every_n_steps.save_top_k="$CHECKPOINT_SAVE_TOP_K" \
   loader.global_batch_size="$GLOBAL_BATCH" \
   loader.eval_global_batch_size="$GLOBAL_BATCH" \
   loader.batch_size="$MICRO_BATCH" \

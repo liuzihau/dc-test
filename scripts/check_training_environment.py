@@ -44,8 +44,19 @@ def main():
   print(f'Free disk near data cache: {free_gib:.1f} GiB')
   train_cache = list(data_dir.glob('openwebtext-train_train_bs1024*'))
   valid_cache = list(data_dir.glob('openwebtext-valid_validation_bs1024*'))
-  if train_cache and valid_cache:
-    print('Prepared OpenWebText train and validation caches: found')
+  cache_paths = train_cache[:1] + valid_cache[:1]
+  cache_complete = len(cache_paths) == 2 and all(
+    (path / 'dataset_info.json').is_file()
+    and (path / 'state.json').is_file()
+    and any(path.glob('*.arrow'))
+    for path in cache_paths)
+  if cache_complete:
+    print('Prepared OpenWebText train and validation caches: complete')
+  elif train_cache or valid_cache:
+    print('ERROR: an incomplete prepared OpenWebText cache exists. Complete '
+          'the interrupted rsync or remove the exact incomplete .dat '
+          'directories before rebuilding.')
+    raise SystemExit(2)
   else:
     print('WARNING: prepared OpenWebText cache is absent; the first run will '
           'download and preprocess a very large dataset.')
