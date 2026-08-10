@@ -63,11 +63,18 @@ class Metrics:
      self.config.eval.perplexity_batch_size
     self.gen_ppl_eval_model_name_or_path = \
       config.eval.gen_ppl_eval_model_name_or_path
-    self.tokenizer = transformers.AutoTokenizer.\
-      from_pretrained(self.gen_ppl_eval_model_name_or_path)
-    if self.tokenizer.pad_token is None:
-      self.tokenizer.pad_token = self.tokenizer.eos_token
-      self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+    # Generative perplexity is optional and its evaluator can be several GB.
+    # Do not download it merely to train or run likelihood validation.
+    self.tokenizer = None
+
+  def _get_eval_tokenizer(self):
+    if self.tokenizer is None:
+      self.tokenizer = transformers.AutoTokenizer.from_pretrained(
+        self.gen_ppl_eval_model_name_or_path)
+      if self.tokenizer.pad_token is None:
+        self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+    return self.tokenizer
 
   def init_valid_vars(self):
     eps = self.sampling_eps
@@ -137,8 +144,8 @@ class Metrics:
         'max_length': max_length,
       }
       eval_context_size = 1024
-    samples = self.tokenizer(text_samples,
-                             **tokenizer_kwargs)
+    tokenizer = self._get_eval_tokenizer()
+    samples = tokenizer(text_samples, **tokenizer_kwargs)
     attn_mask = samples['attention_mask']
     samples = samples['input_ids']
     if 'llama2' not in self.gen_ppl_eval_model_name_or_path:
@@ -156,6 +163,7 @@ class Metrics:
     stride=512,
     device='cuda') -> None:
     os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+    tokenizer = self._get_eval_tokenizer()
     eval_model = transformers.AutoModelForCausalLM.from_pretrained(
       self.gen_ppl_eval_model_name_or_path).eval()
     if 'llama2' not in self.gen_ppl_eval_model_name_or_path:
@@ -201,7 +209,7 @@ class Metrics:
         logits = logits.transpose(-1, -2)
         
         nlls = F.cross_entropy(logits[..., :-1], sample_chunk[..., 1:], reduction='none')
-        valid_tokens = (sample_chunk[..., 1:] != self.tokenizer.eos_token_id).to(torch.float)
+        valid_tokens = (sample_chunk[..., 1:] != tokenizer.eos_token_id).to(torch.float)
         
         if i == 0:
           # for the first stride, update the nlls of the entire eval_context_size

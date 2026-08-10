@@ -37,8 +37,31 @@ sampling:
 # This is independent of sampling.kv_cache, which stores completed blocks.
 step_memory:
   enabled: False
-  gate_init: 0.0
-  detach_between_steps: False
+  # Dedicated denoising attention uses 48 spatial and 16 temporal RoPE
+  # dimensions for the 64-dimensional heads in model=small.
+  spatial_rope_dim: 48
+  temporal_rope_dim: 16
+  use_previous_kv: True
+  # When true, truncate cross-forward gradients at the preceding backbone
+  # hidden state while keeping the cache projection itself trainable.
+  detach_between_steps: True
+  pretrain:
+    enabled: False
+    full_loss_weight: 0.1
+    s_loss_weight: 1.0
+    t_loss_weight: 1.0
+    min_mask_ratio: 1e-3
+    teacher_token_probability: 1.0
+  rollout:
+    enabled: False
+    weight: 0.1
+    curriculum_steps: 50_000
+    forwards_start: 2
+    forwards_end: 5
+    final_mask_ratio_start: 0.9375  # 15 / 16
+    final_mask_ratio_end: 0.0625    # 1 / 16
+    teacher_token_probability: 0.85
+    nucleus_p: 0.9
 
 training:
   ema: 0.9999

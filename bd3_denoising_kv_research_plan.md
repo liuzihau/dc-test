@@ -1,5 +1,14 @@
 # Recurrent Denoising-Space KV Memory for Block Diffusion Language Models
 
+> **2026-08-10 shifted-pretraining update:** The authoritative design is in
+> `FINAL_DENOISING_CACHE_PLAN.md`. It uses DCache-before-normal ordering, the
+> shifted `layer l reads previous M_(l+1)` mapping, one final `M13` writer, and
+> full-sequence three-pass `100% -> s -> t` MDLM pretraining for 100k updates.
+>
+> **2026-08-09 final-plan update:** The authoritative first-trial design is in
+> `FINAL_DENOISING_CACHE_PLAN.md`. This document is retained as detailed
+> historical research context and contains superseded alternatives.
+
 > **2026-08-08 implementation update:** Read `PROJECT_SERVER_HANDOFF.md` first.
 > It records the current code, RTX 3090 feasibility, server procedure, and two
 > decisions made after this plan was written: the first smoke test stores the

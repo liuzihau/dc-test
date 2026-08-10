@@ -1,5 +1,22 @@
 # Recurrent Denoising QKV Memory for BD3-LM
 
+> **2026-08-10 shifted-pretraining update:** Read
+> `FINAL_DENOISING_CACHE_PLAN.md` first. It now supersedes the same-layer
+> architecture below. The implemented proposal runs DCache attention before
+> normal attention; layer `l` reads previous `M_(l+1)`; only `M13` needs an
+> explicit final writer; and pretraining uses the teacher-forced three-pass
+> `100% -> s -> t` objective with relative weights `0.1/1/1`. The matched
+> vanilla and recurrent launchers now target 100k full-sequence MDLM
+> pretraining updates.
+>
+> **2026-08-09 final-plan update:** Read `FINAL_DENOISING_CACHE_PLAN.md` first.
+> It supersedes this handoff where the documents disagree, including the
+> separate denoising QKV/output sublayer, joint previous+current denoising
+> softmax, parameter-free 2D RoPE, removal of the tanh gate, from-scratch
+> training, and the revised rollout curriculum down to one remaining mask.
+> The `dcache` environment, end-to-end CUDA smoke test, full-size VRAM profile,
+> and launch/evaluation commands are recorded in `DCACHE_RUNBOOK.md`.
+
 ## Server handoff and current project state
 
 **Snapshot date:** 2026-08-08  

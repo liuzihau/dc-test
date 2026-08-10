@@ -1,13 +1,17 @@
 # dc-test: Recurrent Denoising Cache Experiments
 
-This is a private research prototype investigating recurrent QKV memory across
-denoising evaluations in Block Diffusion language models. The current first
-stage keeps the original BD3-LM architecture and objective, adds a separate
-previous-denoising memory-attention branch, and deliberately defers hybrid
-autoregressive/causal layers.
+This is a private research prototype investigating recurrent KV memory across
+denoising evaluations in Block Diffusion language models. The current stage
+pretrains a shifted recurrent memory in which layer `l` reads the preceding
+denoising forward's one-layer-deeper `M_(l+1)` through a separate attention
+branch. Hybrid autoregressive/causal layers remain deferred.
 
 Start with:
 
+- [`FINAL_DENOISING_CACHE_PLAN.md`](FINAL_DENOISING_CACHE_PLAN.md) for the
+  authoritative first-trial architecture, rollout, and comparison plan;
+- [`DCACHE_RUNBOOK.md`](DCACHE_RUNBOOK.md) for the tested `dcache` Conda
+  environment, tests, 100k pretraining launchers, and evaluation commands;
 - [`PROJECT_SERVER_HANDOFF.md`](PROJECT_SERVER_HANDOFF.md) for the complete
   research story, current implementation state, hardware guidance, and next
   tasks;
