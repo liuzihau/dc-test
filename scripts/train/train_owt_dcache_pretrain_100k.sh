@@ -8,16 +8,20 @@ DEVICES="${DCACHE_DEVICES:-4}"
 MICRO_BATCH="${DCACHE_MICRO_BATCH:-4}"
 GLOBAL_BATCH="${DCACHE_GLOBAL_BATCH:-512}"
 MAX_STEPS="${DCACHE_MAX_STEPS:-100000}"
-VAL_INTERVAL="${DCACHE_VAL_INTERVAL:-10000}"
+VAL_OPTIMIZER_INTERVAL="${DCACHE_VAL_INTERVAL:-10000}"
 VAL_BATCHES="${DCACHE_VAL_BATCHES:-1.0}"
 SANITY_VAL_STEPS="${DCACHE_SANITY_VAL_STEPS:-2}"
 CHECKPOINT_SAVE_TOP_K="${DCACHE_CHECKPOINT_SAVE_TOP_K:--1}"
 PYTHON_BIN="${DCACHE_PYTHON:-python}"
 
+PER_UPDATE_BATCHES=$(( (GLOBAL_BATCH + DEVICES * MICRO_BATCH - 1) / (DEVICES * MICRO_BATCH) ))
+VAL_TRAIN_BATCH_INTERVAL=$(( VAL_OPTIMIZER_INTERVAL * PER_UPDATE_BATCHES ))
+
 mkdir -p "$DATA_DIR" "$RUN_DIR"
 cd "$REPO_DIR"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
+echo "Validation every ${VAL_OPTIMIZER_INTERVAL} optimizer steps (${VAL_TRAIN_BATCH_INTERVAL} training batches with accumulation ${PER_UPDATE_BATCHES})."
 
 "$PYTHON_BIN" -u main.py \
   mode=train \
@@ -35,7 +39,7 @@ export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
   trainer.precision=bf16-mixed \
   trainer.max_steps="$MAX_STEPS" \
   trainer.log_every_n_steps=10 \
-  trainer.val_check_interval="$VAL_INTERVAL" \
+  trainer.val_check_interval="$VAL_TRAIN_BATCH_INTERVAL" \
   trainer.limit_val_batches="$VAL_BATCHES" \
   trainer.num_sanity_val_steps="$SANITY_VAL_STEPS" \
   callbacks.checkpoint_every_n_steps.save_top_k="$CHECKPOINT_SAVE_TOP_K" \

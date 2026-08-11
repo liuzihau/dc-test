@@ -175,10 +175,12 @@ The 5k launchers keep only `last.ckpt` and the validation-selected `best.ckpt`.
 For DCache these consume roughly 6.4 GB together, instead of roughly 38 GB for
 all ten numbered checkpoints plus `last` and `best`.
 
-Each run validates on 100 fixed batches every 500 optimizer steps. The RNG is
-isolated and deterministically seeded, so the vanilla state and DCache `s`
-state use matched validation corruptions. In both CSV files, `val/nll` is the
-primary comparable validation metric. For training, compare vanilla
+Each run validates on 100 fixed batches every 500 optimizer steps. Lightning's
+integer `val_check_interval` counts training micro-batches, so the launchers
+multiply 500 by the gradient-accumulation factor (64 here) and pass 32,000.
+The RNG is isolated and deterministically seeded, so the vanilla state and
+DCache `s` state use matched validation corruptions. In both CSV files,
+`val/nll` is the primary comparable validation metric. For training, compare vanilla
 `trainer/loss` with DCache `trainer/loss_s`; DCache `trainer/loss` is the full
 three-pass objective and is plotted only as extra context.
 
