@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Profile one real-shape vanilla or three-pass DCache pretraining update."""
+"""Profile one real-shape vanilla or five-forward DCache-v2 update."""
 
 import argparse
 import json
@@ -68,9 +68,14 @@ def compose_config(micro_batch, recurrent):
         'training.from_pretrained=null',
         f'step_memory.enabled={str(recurrent).lower()}',
         f'step_memory.pretrain.enabled={str(recurrent).lower()}',
+        f'step_memory.gate.enabled={str(recurrent).lower()}',
+        'step_memory.gate.init=0.1',
         'step_memory.use_previous_kv=true',
         'step_memory.detach_between_steps=true',
         'step_memory.pretrain.teacher_token_probability=1.0',
+        f'step_memory.pretrain.source_dropout.enabled={str(recurrent).lower()}',
+        f'step_memory.pretrain.identity.enabled={str(recurrent).lower()}',
+        'step_memory.pretrain.identity.batch_probability=1.0',
         'step_memory.rollout.enabled=false',
         'wandb=null',
       ])
@@ -115,7 +120,7 @@ def main():
 
   print('DCACHE_PRETRAIN_PROFILE_OK')
   print(json.dumps({
-    'mode': 'shifted_dcache' if recurrent else 'vanilla_mdlm',
+    'mode': 'dcache_v2' if recurrent else 'vanilla_mdlm',
     'micro_batch': args.micro_batch,
     'steps': args.steps,
     'gpu': torch.cuda.get_device_name(torch.cuda.current_device()),

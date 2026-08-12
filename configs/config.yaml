@@ -45,13 +45,35 @@ step_memory:
   # When true, truncate cross-forward gradients at the preceding backbone
   # hidden state while keeping the cache projection itself trainable.
   detach_between_steps: True
+  # Optional residual gate on each complete denoising-attention sublayer.
+  # DCache-v2 launchers enable it; false preserves v1 checkpoint structure.
+  gate:
+    enabled: False
+    init: 0.1
   pretrain:
     enabled: False
-    full_loss_weight: 0.1
-    s_loss_weight: 1.0
-    t_loss_weight: 1.0
-    min_mask_ratio: 1e-3
+    # Five forwards: full mask, followed by four exact nested states.
+    # k ~ U(0.025, 0.10), x ~ U(1.5k, 0.9975 - 1.5k), and
+    # (t0,t1,t2,t3) = x + (1.5k,0.5k,-0.5k,-1.5k).
+    step_size_min: 0.025
+    step_size_max: 0.10
+    max_t0_mask_ratio: 0.9975
+    full_loss_weight: 0.05
+    t0_loss_weight: 0.10
+    t1_loss_weight: 0.20
+    t2_loss_weight: 1.00
+    t3_loss_weight: 0.70
     teacher_token_probability: 1.0
+    source_dropout:
+      enabled: False
+      cache_only_probability: 0.20
+      current_only_probability: 0.05
+      warmup_steps: 1_000
+    identity:
+      enabled: False
+      batch_probability: 0.25
+      margin: 0.05
+      weight: 0.10
   rollout:
     enabled: False
     weight: 0.1

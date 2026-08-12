@@ -158,7 +158,34 @@ class Diffusion(L.LightningModule):
       assert not self.config.sampling.kv_cache
       assert not bool(getattr(rollout_config, 'enabled', False))
       assert float(pretrain_config.teacher_token_probability) == 1.0, (
-        'The first shifted-DCache pretraining trial is fully teacher forced')
+        'Local DCache pretraining is fully teacher forced')
+      step_size_min = float(pretrain_config.step_size_min)
+      step_size_max = float(pretrain_config.step_size_max)
+      max_t0 = float(pretrain_config.max_t0_mask_ratio)
+      assert 0 < step_size_min <= step_size_max
+      assert max_t0 < 1.0
+      assert 3 * step_size_max <= max_t0, (
+        'Largest DCache step leaves no valid interval for trajectory center')
+      weights = [
+        float(pretrain_config.full_loss_weight),
+        float(pretrain_config.t0_loss_weight),
+        float(pretrain_config.t1_loss_weight),
+        float(pretrain_config.t2_loss_weight),
+        float(pretrain_config.t3_loss_weight),
+      ]
+      assert all(weight >= 0 for weight in weights)
+      assert sum(weights) > 0
+      source_config = pretrain_config.source_dropout
+      assert 0 <= float(source_config.cache_only_probability) <= 1
+      assert 0 <= float(source_config.current_only_probability) <= 1
+      assert (
+        float(source_config.cache_only_probability)
+        + float(source_config.current_only_probability) <= 1)
+      assert int(source_config.warmup_steps) >= 1
+      identity_config = pretrain_config.identity
+      assert 0 <= float(identity_config.batch_probability) <= 1
+      assert float(identity_config.margin) >= 0
+      assert float(identity_config.weight) >= 0
     if bool(getattr(rollout_config, 'enabled', False)):
       assert self.config.step_memory.enabled
       assert self.config.algo.name == 'bd3lm'
@@ -365,7 +392,8 @@ class Diffusion(L.LightningModule):
 
   def forward(self, x, sigma, sample_mode=False, store_kv=False,
               previous_step_kv=None, return_step_kv=False,
-              detach_cache_backbone=False):
+              detach_cache_backbone=False,
+              step_memory_source_mask=None):
     """Returns log score."""
     sigma = self._process_sigma(sigma)
     with torch.amp.autocast('cuda', dtype=torch.float32):
@@ -386,7 +414,8 @@ class Diffusion(L.LightningModule):
             sample_mode=sample_mode,
             previous_step_kv=previous_step_kv,
             return_step_kv=return_step_kv,
-            detach_cache_backbone=detach_cache_backbone)
+            detach_cache_backbone=detach_cache_backbone,
+            step_memory_source_mask=step_memory_source_mask)
         if return_step_kv:
           logits, next_step_kv = backbone_output
         else:
@@ -543,62 +572,9 @@ class Diffusion(L.LightningModule):
     }
     return rollout_loss, metrics_out
 
-  def _ensure_nested_transition(self, x0, attention_mask, s_time):
-    """Build teacher-forced nested states x_s and x_t with 1 <= masks_t < masks_s.
-
-    The s state follows the ordinary MDLM Bernoulli corruption except for the
-    rare sample with fewer than two maskable positions, where two positions are
-    forced masked so that a valid recurrent transition exists. Given t < s,
-    each s-mask remains masked with probability t/s; boundary corrections then
-    guarantee at least one reveal and at least one remaining prediction target.
-    """
-    eligible = attention_mask.bool().clone()
-    if self.ignore_bos:
-      eligible[:, 0] = False
-    if (eligible.sum(dim=-1) < 2).any():
-      raise ValueError(
-        'Shifted-DCache pretraining needs at least two maskable tokens')
-
-    _, s_probability = self.noise(s_time)
-    s_mask = (torch.rand_like(x0, dtype=torch.float32)
-              <= s_probability) & eligible
-    for batch_index in range(x0.shape[0]):
-      if int(s_mask[batch_index].sum()) < 2:
-        candidates = eligible[batch_index].nonzero(
-          as_tuple=False).flatten()
-        chosen = candidates[torch.randperm(
-          candidates.numel(), device=x0.device)[:2]]
-        s_mask[batch_index, chosen] = True
-
-    min_ratio = float(self.config.step_memory.pretrain.min_mask_ratio)
-    random_fraction = torch.rand_like(s_time)
-    t_time = min_ratio + random_fraction * (s_time - min_ratio)
-    t_time = torch.minimum(t_time, s_time)
-    _, t_probability = self.noise(t_time)
-    remain_probability = (t_probability / s_probability).clamp(0.0, 1.0)
-    t_mask = s_mask & (
-      torch.rand_like(x0, dtype=torch.float32) <= remain_probability)
-
-    for batch_index in range(x0.shape[0]):
-      s_positions = s_mask[batch_index].nonzero(
-        as_tuple=False).flatten()
-      t_count = int(t_mask[batch_index].sum())
-      if t_count == 0:
-        keep = s_positions[torch.randint(
-          s_positions.numel(), (), device=x0.device)]
-        t_mask[batch_index, keep] = True
-      elif t_count == s_positions.numel():
-        reveal = s_positions[torch.randint(
-          s_positions.numel(), (), device=x0.device)]
-        t_mask[batch_index, reveal] = False
-
-    x_s = torch.where(s_mask, self.mask_index, x0)
-    x_t = torch.where(t_mask, self.mask_index, x0)
-    return x_s, x_t, t_time, s_mask, t_mask
-
   def _recurrent_pretrain_state_loss(
       self, x0, state, attention_mask, time, previous_step_kv,
-      return_step_kv):
+      return_step_kv, step_memory_source_mask=None):
     """Evaluate one explicitly constructed MDLM state and optional cache."""
     loss_scale, probability = self.noise(time)
     sigma = self._sigma_from_p(probability[:, 0].unsqueeze(-1))
@@ -609,7 +585,8 @@ class Diffusion(L.LightningModule):
       previous_step_kv=previous_step_kv,
       return_step_kv=return_step_kv,
       detach_cache_backbone=bool(
-        self.config.step_memory.detach_between_steps))
+        self.config.step_memory.detach_between_steps),
+      step_memory_source_mask=step_memory_source_mask)
     if return_step_kv:
       model_output, next_step_kv = output
     else:
@@ -620,58 +597,291 @@ class Diffusion(L.LightningModule):
     nlls = loss_scale * target_log_probability * attention_mask
     token_nll = nlls.sum() / attention_mask.sum()
     return Loss(
-      loss=token_nll, nlls=nlls, token_mask=attention_mask), next_step_kv
+      loss=token_nll, nlls=nlls, token_mask=attention_mask), \
+      next_step_kv, model_output
 
-  def _step_memory_pretrain_loss(self, x0, attention_mask):
-    """Three-pass full-mask -> s -> t shifted-DCache pretraining objective."""
-    x0, _, attention_mask = self._maybe_sub_sample(x0, attention_mask)
-    attention_mask = attention_mask.to(dtype=torch.float32)
-    batch_size = x0.shape[0]
-    min_ratio = float(self.config.step_memory.pretrain.min_mask_ratio)
-    s_time = self._sample_t(
-      x0.shape, x0.device, min_ratio, 1.0,
-      block_size=self.config.model.length)
-    x_s, x_t, t_time, s_mask, t_mask = self._ensure_nested_transition(
-      x0, attention_mask, s_time)
+  def _sample_local_step_trajectory(self, x0, attention_mask):
+    """Sample exact nested masks for full -> t0 -> t1 -> t2 -> t3.
 
+    Mask ratios follow the agreed centered construction:
+
+      k ~ U(k_min, k_max)
+      x ~ U(1.5k, max_t0 - 1.5k)
+      (t0, t1, t2, t3) = x + (1.5k, 0.5k, -0.5k, -1.5k)
+
+    Integer mask counts are corrected at sequence boundaries so t0 is never
+    fully masked, t3 keeps at least one prediction target, and every adjacent
+    transition reveals at least one clean teacher token.
+    """
+    config = self.config.step_memory.pretrain
     eligible = attention_mask.bool().clone()
     if self.ignore_bos:
       eligible[:, 0] = False
+    eligible_counts = eligible.sum(dim=-1)
+    if (eligible_counts < 5).any():
+      raise ValueError(
+        'Local DCache trajectories need at least five maskable positions')
+
+    batch_size = x0.shape[0]
+    k_min = float(config.step_size_min)
+    k_max = float(config.step_size_max)
+    max_t0 = float(config.max_t0_mask_ratio)
+    k = k_min + torch.rand(
+      (batch_size, 1), device=x0.device) * (k_max - k_min)
+    x_min = 1.5 * k
+    x_max = max_t0 - 1.5 * k
+    if (x_max < x_min).any():
+      raise ValueError(
+        'Local trajectory has an empty center interval; reduce step size')
+    center = x_min + torch.rand_like(k) * (x_max - x_min)
+    offsets = torch.tensor(
+      [1.5, 0.5, -0.5, -1.5], device=x0.device)[None]
+    sampled_ratios = center + k * offsets
+
+    masks = [torch.zeros_like(eligible) for _ in range(4)]
+    realized_ratios = torch.empty_like(sampled_ratios)
+    mask_counts = torch.empty(
+      (batch_size, 4), dtype=torch.long, device=x0.device)
+    for batch_index in range(batch_size):
+      candidates = eligible[batch_index].nonzero(
+        as_tuple=False).flatten()
+      count = int(candidates.numel())
+      raw_counts = torch.round(
+        sampled_ratios[batch_index] * count).to(torch.long)
+      corrected = torch.empty_like(raw_counts)
+      corrected[0] = raw_counts[0].clamp(min=4, max=count - 1)
+      corrected[1] = raw_counts[1].clamp(
+        min=3, max=int(corrected[0]) - 1)
+      corrected[2] = raw_counts[2].clamp(
+        min=2, max=int(corrected[1]) - 1)
+      corrected[3] = raw_counts[3].clamp(
+        min=1, max=int(corrected[2]) - 1)
+      permutation = candidates[torch.randperm(
+        count, device=x0.device)]
+      for state_index in range(4):
+        masks[state_index][
+          batch_index, permutation[:corrected[state_index]]] = True
+      mask_counts[batch_index] = corrected
+      realized_ratios[batch_index] = corrected.float() / count
+
+    states = [
+      torch.where(mask, self.mask_index, x0) for mask in masks]
+    return {
+      'states': states,
+      'masks': masks,
+      'ratios': realized_ratios,
+      'sampled_ratios': sampled_ratios,
+      'mask_counts': mask_counts,
+      'step_size': k,
+      'center': center,
+      'eligible': eligible,
+    }
+
+  def _source_dropout_mask(self, masked_positions):
+    """Sample joint/cache-only/current-only modes for masked queries."""
+    config = self.config.step_memory.pretrain.source_dropout
+    if not self.training or not bool(config.enabled):
+      return None, {
+        'cache_only_probability': torch.tensor(
+          0.0, device=masked_positions.device),
+        'cache_only_fraction': torch.tensor(
+          0.0, device=masked_positions.device),
+        'current_only_fraction': torch.tensor(
+          0.0, device=masked_positions.device),
+      }
+    trainer = getattr(self, '_trainer', None)
+    step = 0 if trainer is None else int(trainer.global_step)
+    warmup_steps = max(1, int(config.warmup_steps))
+    progress = min(float(step) / warmup_steps, 1.0)
+    cache_probability = float(config.cache_only_probability) * progress
+    current_probability = float(config.current_only_probability)
+    if cache_probability + current_probability > 1.0:
+      raise ValueError('Step-memory source probabilities must sum to <= 1')
+
+    random_values = torch.rand(
+      masked_positions.shape, device=masked_positions.device)
+    source_mask = torch.zeros_like(masked_positions, dtype=torch.int8)
+    cache_only = masked_positions & (random_values < cache_probability)
+    current_only = (
+      masked_positions
+      & (random_values >= cache_probability)
+      & (random_values < cache_probability + current_probability))
+    source_mask[cache_only] = 1
+    source_mask[current_only] = 2
+    denominator = masked_positions.float().sum().clamp_min(1)
+    return source_mask, {
+      'cache_only_probability': torch.tensor(
+        cache_probability, device=masked_positions.device),
+      'cache_only_fraction': cache_only.float().sum() / denominator,
+      'current_only_fraction': current_only.float().sum() / denominator,
+    }
+
+  @staticmethod
+  def _per_example_raw_masked_nll(model_output, x0, token_mask):
+    target_log_probability = torch.gather(
+      model_output, -1, x0[:, :, None]).squeeze(-1)
+    token_mask = token_mask.to(target_log_probability.dtype)
+    return -(target_log_probability * token_mask).sum(dim=-1) / \
+      token_mask.sum(dim=-1).clamp_min(1)
+
+  @staticmethod
+  def _shuffle_cache_across_batch(cache):
+    batch_size = cache[0].shape[0]
+    if batch_size < 2:
+      raise ValueError('Shuffled-cache identity loss requires batch size >= 2')
+    shift = int(torch.randint(
+      1, batch_size, (), device=cache[0].device).item())
+    return [entry.roll(shifts=shift, dims=0) for entry in cache]
+
+  def _step_memory_gate_mean(self):
+    gates = [
+      torch.tanh(block.step_memory_gate)
+      for block in self.backbone.blocks
+      if getattr(block, 'step_memory_gate', None) is not None]
+    if not gates:
+      return torch.tensor(1.0, device=self.device)
+    return torch.stack(gates).mean()
+
+  def _step_memory_pretrain_loss(self, x0, attention_mask):
+    """Five-forward local-trajectory DCache-v2 pretraining objective."""
+    x0, _, attention_mask = self._maybe_sub_sample(x0, attention_mask)
+    attention_mask = attention_mask.to(dtype=torch.float32)
+    batch_size = x0.shape[0]
+    trajectory = self._sample_local_step_trajectory(x0, attention_mask)
+    eligible = trajectory['eligible']
     full_state = torch.where(eligible, self.mask_index, x0)
     full_time = torch.ones(
       (batch_size, 1), device=x0.device, dtype=torch.float32)
 
-    full_loss, full_cache = self._recurrent_pretrain_state_loss(
+    full_loss, previous_cache, _ = self._recurrent_pretrain_state_loss(
       x0, full_state, attention_mask, full_time,
       previous_step_kv=None, return_step_kv=True)
-    s_loss, s_cache = self._recurrent_pretrain_state_loss(
-      x0, x_s, attention_mask, s_time,
-      previous_step_kv=full_cache, return_step_kv=True)
-    t_loss, _ = self._recurrent_pretrain_state_loss(
-      x0, x_t, attention_mask, t_time,
-      previous_step_kv=s_cache, return_step_kv=False)
-
     config = self.config.step_memory.pretrain
+    state_weights = [
+      float(config.t0_loss_weight),
+      float(config.t1_loss_weight),
+      float(config.t2_loss_weight),
+      float(config.t3_loss_weight),
+    ]
+    state_losses = []
+    source_masks = []
+    source_diagnostics = []
+    t2_cache = None
+    t3_output = None
+    for state_index, (state, mask) in enumerate(zip(
+        trajectory['states'], trajectory['masks'])):
+      source_mask = None
+      dropout_diagnostics = {
+        'cache_only_probability': torch.tensor(0.0, device=x0.device),
+        'cache_only_fraction': torch.tensor(0.0, device=x0.device),
+        'current_only_fraction': torch.tensor(0.0, device=x0.device),
+      }
+      if state_index >= 2:
+        source_mask, dropout_diagnostics = self._source_dropout_mask(mask)
+      return_cache = state_index < 3
+      state_loss, next_cache, model_output = \
+        self._recurrent_pretrain_state_loss(
+          x0, state, attention_mask,
+          trajectory['ratios'][:, state_index:state_index + 1],
+          previous_step_kv=previous_cache,
+          return_step_kv=return_cache,
+          step_memory_source_mask=source_mask)
+      state_losses.append(state_loss)
+      if state_index == 3:
+        t3_output = model_output
+      else:
+        del model_output
+      source_masks.append(source_mask)
+      source_diagnostics.append(dropout_diagnostics)
+      if state_index == 2:
+        t2_cache = next_cache
+      previous_cache = next_cache
+
     full_weight = float(config.full_loss_weight)
-    s_weight = float(config.s_loss_weight)
-    t_weight = float(config.t_loss_weight)
-    weight_sum = full_weight + s_weight + t_weight
+    weight_sum = full_weight + sum(state_weights)
     if weight_sum <= 0:
       raise ValueError('Shifted-DCache pretraining loss weights must sum positive')
-    total_loss = (
+    base_loss = (
       full_weight * full_loss.loss
-      + s_weight * s_loss.loss
-      + t_weight * t_loss.loss) / weight_sum
+      + sum(weight * loss.loss for weight, loss in zip(
+        state_weights, state_losses))) / weight_sum
+
+    identity_config = config.identity
+    identity_loss = torch.zeros((), device=x0.device)
+    identity_correct_nll = torch.zeros((), device=x0.device)
+    identity_shuffled_nll = torch.zeros((), device=x0.device)
+    identity_applied = torch.zeros((), device=x0.device)
+    apply_identity = (
+      self.training
+      and bool(identity_config.enabled)
+      and batch_size >= 2
+      and float(torch.rand((), device=x0.device))
+      < float(identity_config.batch_probability))
+    if apply_identity:
+      shuffled_cache = self._shuffle_cache_across_batch(t2_cache)
+      with torch.no_grad():
+        shuffled_output = self.forward(
+          trajectory['states'][3],
+          sigma=self._sigma_from_p(trajectory['ratios'][:, 3:4]),
+          sample_mode=True,
+          previous_step_kv=shuffled_cache,
+          return_step_kv=False,
+          step_memory_source_mask=source_masks[3])
+      identity_mask = trajectory['masks'][3]
+      if source_masks[3] is not None:
+        identity_mask = identity_mask & source_masks[3].ne(2)
+      valid_examples = identity_mask.any(dim=-1)
+      if valid_examples.any():
+        identity_applied.fill_(1.0)
+        correct_per_example = self._per_example_raw_masked_nll(
+          t3_output, x0, identity_mask)[valid_examples]
+        shuffled_per_example = self._per_example_raw_masked_nll(
+          shuffled_output, x0, identity_mask)[valid_examples]
+        identity_correct_nll = correct_per_example.mean()
+        identity_shuffled_nll = shuffled_per_example.mean()
+        identity_loss = torch.relu(
+          float(identity_config.margin)
+          + correct_per_example
+          - shuffled_per_example.detach()).mean()
+      del shuffled_output
+    total_loss = base_loss + float(identity_config.weight) * identity_loss
+
+    cache_only_fraction = torch.stack([
+      item['cache_only_fraction'] for item in source_diagnostics[2:]]).mean()
+    current_only_fraction = torch.stack([
+      item['current_only_fraction'] for item in source_diagnostics[2:]]).mean()
+    cache_only_probability = source_diagnostics[2][
+      'cache_only_probability']
     diagnostics = {
       'loss_full': full_loss.loss.detach(),
-      'loss_s': s_loss.loss.detach(),
-      'loss_t': t_loss.loss.detach(),
-      's_mask_ratio': s_mask.float().sum() / eligible.float().sum(),
-      't_mask_ratio': t_mask.float().sum() / eligible.float().sum(),
-      'revealed_tokens': (s_mask & ~t_mask).float().sum(dim=-1).mean(),
-      'remaining_masks': t_mask.float().sum(dim=-1).mean(),
+      'loss_t0': state_losses[0].loss.detach(),
+      'loss_t1': state_losses[1].loss.detach(),
+      'loss_t2': state_losses[2].loss.detach(),
+      'loss_t3': state_losses[3].loss.detach(),
+      'mask_ratio_t0': trajectory['ratios'][:, 0].mean(),
+      'mask_ratio_t1': trajectory['ratios'][:, 1].mean(),
+      'mask_ratio_t2': trajectory['ratios'][:, 2].mean(),
+      'mask_ratio_t3': trajectory['ratios'][:, 3].mean(),
+      'step_size': trajectory['step_size'].mean(),
+      'revealed_tokens': (
+        trajectory['mask_counts'][:, :-1]
+        - trajectory['mask_counts'][:, 1:]).float().mean(),
+      'remaining_masks': trajectory['mask_counts'][:, 3].float().mean(),
+      'source_cache_only_probability': cache_only_probability,
+      'source_cache_only_fraction': cache_only_fraction,
+      'source_current_only_fraction': current_only_fraction,
+      'identity_loss': identity_loss.detach(),
+      'identity_applied': identity_applied,
+      'identity_correct_nll': identity_correct_nll.detach(),
+      'identity_shuffled_nll': identity_shuffled_nll.detach(),
+      'identity_gain': (
+        identity_shuffled_nll - identity_correct_nll).detach(),
+      'gate_mean': self._step_memory_gate_mean().detach(),
+      'loss_base': base_loss.detach(),
     }
-    return total_loss, s_loss, diagnostics
+    # t2 has the largest trajectory weight and a twice-warmed cache. Keep it
+    # as the validation/training reference Loss used by the metric accumulator.
+    return total_loss, state_losses[2], diagnostics
     
   def on_train_epoch_start(self):
     self.backbone.train()
@@ -684,9 +894,10 @@ class Diffusion(L.LightningModule):
     del batch_idx
     pretrain_config = getattr(self.config.step_memory, 'pretrain', {})
     if bool(getattr(pretrain_config, 'enabled', False)):
-      total_loss, s_loss, diagnostics = self._step_memory_pretrain_loss(
+      total_loss, reference_loss, diagnostics = self._step_memory_pretrain_loss(
         batch['input_ids'], batch['attention_mask'])
-      self.metrics.train_nlls.update(s_loss.nlls, s_loss.token_mask)
+      self.metrics.train_nlls.update(
+        reference_loss.nlls, reference_loss.token_mask)
       for name, value in diagnostics.items():
         self.log(
           f'trainer/{name}', value, on_step=True, on_epoch=False,
@@ -794,23 +1005,41 @@ class Diffusion(L.LightningModule):
       return self._standard_validation_step(batch)
 
   def _step_memory_validation_step(self, batch):
-    """Validate the cache-assisted s-state used for the matched comparison."""
-    total_loss, s_loss, diagnostics = self._step_memory_pretrain_loss(
+    """Validate the twice-warmed t2 state and all trajectory components."""
+    total_loss, reference_loss, diagnostics = self._step_memory_pretrain_loss(
       batch['input_ids'], batch['attention_mask'])
-    token_mask = s_loss.token_mask.clone()
+    token_mask = reference_loss.token_mask.clone()
     if self.ignore_bos:
       token_mask[:, 0] = 0
-    comparable_s_loss = (
-      s_loss.nlls * token_mask).sum() / token_mask.sum().clamp_min(1)
-    self.metrics.valid_nlls.update(s_loss.nlls, token_mask)
+    comparable_t2_loss = (
+      reference_loss.nlls * token_mask).sum() / token_mask.sum().clamp_min(1)
+    self.metrics.valid_nlls.update(reference_loss.nlls, token_mask)
     batch_size = batch['input_ids'].shape[0]
-    self.log('val/loss_s', comparable_s_loss, on_step=False, on_epoch=True,
+    # Preserve loss_s/loss_t aliases so existing plotting tools keep working:
+    # s is the main twice-warmed t2 state and t is the final t3 state.
+    self.log('val/loss_s', comparable_t2_loss, on_step=False, on_epoch=True,
+             sync_dist=True, batch_size=batch_size)
+    self.log('val/loss_t2', comparable_t2_loss, on_step=False, on_epoch=True,
              sync_dist=True, batch_size=batch_size)
     self.log('val/loss_total', total_loss, on_step=False, on_epoch=True,
              sync_dist=True, batch_size=batch_size)
     self.log('val/loss_full', diagnostics['loss_full'], on_step=False,
              on_epoch=True, sync_dist=True, batch_size=batch_size)
-    self.log('val/loss_t', diagnostics['loss_t'], on_step=False,
+    self.log('val/loss_t0', diagnostics['loss_t0'], on_step=False,
+             on_epoch=True, sync_dist=True, batch_size=batch_size)
+    self.log('val/loss_t1', diagnostics['loss_t1'], on_step=False,
+             on_epoch=True, sync_dist=True, batch_size=batch_size)
+    self.log('val/loss_t3', diagnostics['loss_t3'], on_step=False,
+             on_epoch=True, sync_dist=True, batch_size=batch_size)
+    self.log('val/loss_t', diagnostics['loss_t3'], on_step=False,
+             on_epoch=True, sync_dist=True, batch_size=batch_size)
+    for state_index in range(4):
+      self.log(
+        f'val/mask_ratio_t{state_index}',
+        diagnostics[f'mask_ratio_t{state_index}'],
+        on_step=False, on_epoch=True, sync_dist=True,
+        batch_size=batch_size)
+    self.log('val/gate_mean', diagnostics['gate_mean'], on_step=False,
              on_epoch=True, sync_dist=True, batch_size=batch_size)
     return total_loss
 

@@ -20,6 +20,7 @@ BATCH_SIZE="${DCACHE_EVAL_BATCH:-4}"
 NUM_WORKERS="${DCACHE_EVAL_WORKERS:-2}"
 BOOTSTRAP_SAMPLES="${DCACHE_EVAL_BOOTSTRAP:-10000}"
 SEED="${DCACHE_EVAL_SEED:-20260812}"
+GATE_ENABLED="${DCACHE_EVAL_GATE_ENABLED:-0}"
 
 if [[ "$MODE" == "parallel" && "$FIXED_CUDA" == "$TRANSITION_CUDA" ]]; then
   echo "Parallel mode requires two different GPU IDs." >&2
@@ -64,6 +65,9 @@ COMMON_ARGS=(
 if [[ "${DCACHE_EVAL_FORCE:-0}" == "1" ]]; then
   COMMON_ARGS+=(--force)
 fi
+if [[ "$GATE_ENABLED" == "1" ]]; then
+  COMMON_ARGS+=(--dcache-gate-enabled)
+fi
 
 run_fixed() {
   echo "Fixed-corruption evaluation: physical CUDA ${FIXED_CUDA}"
@@ -86,6 +90,7 @@ run_transition() {
 echo "Mode: $MODE"
 echo "Baseline: $BASELINE_CKPT"
 echo "DCache:   $DCACHE_CKPT"
+echo "DCache gate enabled: $GATE_ENABLED"
 echo "Data:     $VALID_DATA"
 echo "Output:   $OUTPUT_ROOT"
 

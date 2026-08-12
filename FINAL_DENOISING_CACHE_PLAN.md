@@ -1,5 +1,10 @@
 # Shifted Recurrent Denoising Cache: 100k Pretraining Plan
 
+> **2026-08-12 DCache-v2 update:** Read
+> `DCACHE_V2_IMPLEMENTATION_WORK_NOTE.md` first. It supersedes this document's
+> three-forward training objective and no-gate choice. The shifted cache
+> architecture below remains the foundation of the implemented v2 trial.
+
 **Decision date:** 2026-08-10
 **Status:** authoritative architecture and first pretraining comparison
 

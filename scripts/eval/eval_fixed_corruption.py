@@ -86,7 +86,7 @@ def run_dcache(args, loader, tokenizer, output_dir, device):
     return
   config = common.compose_eval_config(
     args.batch_size, args.data_dir, recurrent=True,
-    num_workers=args.num_workers)
+    num_workers=args.num_workers, gate_enabled=args.dcache_gate_enabled)
   model = common.load_ema_model(
     args.dcache_checkpoint, config, tokenizer, device)
   print(f'Loaded DCache EMA; {len(missing)}/{len(loader)} batches remain.',
@@ -199,6 +199,7 @@ def main():
     'dcache_checkpoint': common.checkpoint_fingerprint(args.dcache_checkpoint),
     'data_dir': str(args.data_dir),
     'weights': 'EMA',
+    'dcache_gate_enabled': args.dcache_gate_enabled,
   }
   output_dir = common.prepare_output(args.output_dir, metadata, args.force)
   base_config = common.compose_eval_config(

@@ -11,5 +11,5 @@ fi
 echo "Starting the 5k-step vanilla MDLM/BD3 baseline on two GPUs."
 bash "${SCRIPT_DIR}/train_owt_mdlm_pretrain_5k_2x4090.sh" "$@"
 
-echo "Starting the 5k-step shifted-DCache three-pass run on two GPUs."
+echo "Starting the 5k-step five-forward DCache-v2 run on two GPUs."
 bash "${SCRIPT_DIR}/train_owt_dcache_pretrain_5k_2x4090.sh" "$@"

@@ -473,7 +473,9 @@ class DDiTBlock(nn.Module):
                dropout=0.1, block_size=1,
                max_batch_size=64, max_seqlen=1024, attn_backend='flash_attn',
                step_memory_enabled=False, dc_spatial_rope_dim=None,
-               dc_temporal_rope_dim=None):
+               dc_temporal_rope_dim=None,
+               step_memory_gate_enabled=False,
+               step_memory_gate_init=0.1):
     super().__init__()
     self.max_seqlen = max_seqlen
     self.n = n
@@ -496,6 +498,7 @@ class DDiTBlock(nn.Module):
     self.dc_dropout = None
     self.dc_spatial_rope_dim = None
     self.dc_temporal_rope_dim = None
+    self.step_memory_gate = None
     if self.step_memory_enabled:
       self.dc_norm = LayerNorm(dim)
       self.dc_qkv = nn.Linear(dim, 3 * dim, bias=False)
@@ -513,6 +516,11 @@ class DDiTBlock(nn.Module):
         raise ValueError('Denoising RoPE dimensions must both be even')
       self.dc_spatial_rope_dim = dc_spatial_rope_dim
       self.dc_temporal_rope_dim = dc_temporal_rope_dim
+      if step_memory_gate_enabled:
+        if not -1.0 < step_memory_gate_init < 1.0:
+          raise ValueError('Step-memory gate initialization must be in (-1, 1)')
+        raw_gate = math.atanh(float(step_memory_gate_init))
+        self.step_memory_gate = nn.Parameter(torch.tensor(raw_gate))
 
     self.norm2 = LayerNorm(dim)
     self.mlp = nn.Sequential(
@@ -642,13 +650,17 @@ class DDiTBlock(nn.Module):
     return raw_kv[:, -1]
 
   def denoising_attn(
-      self, hidden, previous_step_kv=None, detach_cache_backbone=False):
+      self, hidden, previous_step_kv=None, detach_cache_backbone=False,
+      source_mask=None):
     """Jointly attend to previous and current denoising K/V with 2D RoPE.
 
     Args:
       hidden: `[batch, groups, block, dim]`, where groups are independent
         active blocks during parallel base training.
       previous_step_kv: optional raw `[batch, block, 2, heads, head_dim]`.
+      source_mask: optional integer `[batch, block]` query mask. Zero uses
+        joint cached/current attention, one permits cached K/V only, and two
+        permits current K/V only. It is applied before softmax.
 
     Returns:
       Projected denoising-attention output and the last group's raw entry K/V.
@@ -681,17 +693,43 @@ class DDiTBlock(nn.Module):
       attended_k = torch.cat((previous_k, current_k_rotated), dim=-2)
       attended_v = torch.cat((previous_v, current_v), dim=-2)
     else:
+      if source_mask is not None:
+        raise ValueError('Source dropout requires a previous denoising cache')
       attended_k = current_k_rotated
       attended_v = current_v
 
+    attention_mask = None
+    if source_mask is not None:
+      if groups != 1:
+        raise ValueError('Source dropout is only valid for one active block')
+      if source_mask.shape != (batch_size, block_len):
+        raise ValueError(
+          'Source mask must have shape [batch, active block length]')
+      if source_mask.dtype not in {
+          torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8}:
+        raise ValueError('Source mask must contain integer source modes')
+      if ((source_mask < 0) | (source_mask > 2)).any():
+        raise ValueError('Source mask modes must be joint=0, cache=1, current=2')
+      cache_allowed = source_mask.ne(2)
+      current_allowed = source_mask.ne(1)
+      cache_allowed = cache_allowed[:, :, None].expand(
+        batch_size, block_len, block_len)
+      current_allowed = current_allowed[:, :, None].expand(
+        batch_size, block_len, block_len)
+      attention_mask = torch.cat(
+        (cache_allowed, current_allowed), dim=-1)[:, None]
+
     output = F.scaled_dot_product_attention(
       current_q, attended_k, attended_v,
+      attn_mask=attention_mask,
       is_causal=False,
       scale=1 / math.sqrt(current_q.shape[-1]))
     output = rearrange(
       output, '(b g) h s d -> b g s (h d)', b=batch_size, g=groups)
     output = self.dc_attn_out(output)
     output = self.dc_dropout(output)
+    if self.step_memory_gate is not None:
+      output = torch.tanh(self.step_memory_gate) * output
 
     if detach_cache_backbone:
       raw_entry_kv = self._write_denoising_kv(
@@ -706,7 +744,7 @@ class DDiTBlock(nn.Module):
 
   def denoising_residual(
       self, hidden, previous_step_kv, sample_mode, has_training_mask,
-      detach_cache_backbone=False):
+      detach_cache_backbone=False, source_mask=None):
     """Apply denoising attention to active tokens, preserving other tokens."""
     if sample_mode:
       active = hidden[:, -self.block_size:]
@@ -714,7 +752,8 @@ class DDiTBlock(nn.Module):
       output, next_step_kv = self.denoising_attn(
         groups,
         previous_step_kv=previous_step_kv,
-        detach_cache_backbone=detach_cache_backbone)
+        detach_cache_backbone=detach_cache_backbone,
+        source_mask=source_mask)
       updated_active = active + output[:, 0]
       hidden = torch.cat((hidden[:, :-self.block_size], updated_active), dim=1)
       return hidden, next_step_kv
@@ -737,7 +776,8 @@ class DDiTBlock(nn.Module):
     output, next_step_kv = self.denoising_attn(
       groups,
       previous_step_kv=previous_step_kv,
-      detach_cache_backbone=detach_cache_backbone)
+      detach_cache_backbone=detach_cache_backbone,
+      source_mask=source_mask)
     return hidden + output[:, 0], next_step_kv
 
   def forward(self,
@@ -750,7 +790,8 @@ class DDiTBlock(nn.Module):
               store_kv=False,
               previous_step_kv=None,
               return_step_kv=False,
-              detach_cache_backbone=False):
+              detach_cache_backbone=False,
+              step_memory_source_mask=None):
     batch_size, seq_len = x.shape[0], x.shape[1]
 
     shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = None, None, None, None, None, None
@@ -774,7 +815,8 @@ class DDiTBlock(nn.Module):
         previous_step_kv=previous_step_kv,
         sample_mode=sample_mode,
         has_training_mask=mask is not None,
-        detach_cache_backbone=detach_cache_backbone)
+        detach_cache_backbone=detach_cache_backbone,
+        source_mask=step_memory_source_mask)
 
     x_skip = x
     if c is not None:
@@ -911,6 +953,9 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
       dc_temporal_rope_dim = max(2, head_dim // 4)
       dc_temporal_rope_dim -= dc_temporal_rope_dim % 2
       dc_spatial_rope_dim = head_dim - dc_temporal_rope_dim
+    gate_config = getattr(step_memory_config, 'gate', {})
+    step_memory_gate_enabled = bool(getattr(gate_config, 'enabled', False))
+    step_memory_gate_init = float(getattr(gate_config, 'init', 0.1))
 
     blocks = []
     for _ in range(config.model.n_blocks):
@@ -937,6 +982,8 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
           step_memory_enabled=step_memory_enabled,
           dc_spatial_rope_dim=dc_spatial_rope_dim,
           dc_temporal_rope_dim=dc_temporal_rope_dim,
+          step_memory_gate_enabled=step_memory_gate_enabled,
+          step_memory_gate_init=step_memory_gate_init,
           max_seqlen=self.max_seqlen)
       blocks.append(block)
     self.blocks = nn.ModuleList(blocks)
@@ -988,7 +1035,8 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
 
   def forward(self, indices, sigma, sample_mode=False, store_kv=False,
               previous_step_kv=None, return_step_kv=False,
-              detach_cache_backbone=False):
+              detach_cache_backbone=False,
+              step_memory_source_mask=None):
     x = self.vocab_embed(indices)
     if sigma is None:
       t_cond = None
@@ -1043,6 +1091,8 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         if len(previous_step_kv) != len(self.blocks):
           raise ValueError(
             'Previous denoising cache must contain one entry per reader layer')
+      elif step_memory_source_mask is not None:
+        raise ValueError('Source dropout requires a previous denoising cache')
 
       # The returned list is [M2, M3, ..., M_{L+1}]. Reader layer i consumes
       # entry i on the next denoising forward. M2...M_L are written by the
@@ -1060,7 +1110,8 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
           previous_step_kv=(
             previous_step_kv[i] if previous_step_kv is not None else None),
           return_step_kv=return_step_kv,
-          detach_cache_backbone=detach_cache_backbone)
+          detach_cache_backbone=detach_cache_backbone,
+          step_memory_source_mask=step_memory_source_mask)
         if return_step_kv:
           x, entry_step_kv = block_output
           if i > 0:

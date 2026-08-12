@@ -93,6 +93,16 @@ def test_cache_controls_preserve_shapes_and_do_not_alias_values():
   assert zeroed[0].data_ptr() != cache[0].data_ptr()
 
 
+def test_eval_config_can_select_v1_or_gated_v2_architecture(tmp_path):
+  v1 = common.compose_eval_config(
+    batch_size=2, data_dir=tmp_path, recurrent=True, gate_enabled=False)
+  v2 = common.compose_eval_config(
+    batch_size=2, data_dir=tmp_path, recurrent=True, gate_enabled=True)
+
+  assert not v1.step_memory.gate.enabled
+  assert v2.step_memory.gate.enabled
+
+
 def test_restart_manifest_reuses_only_identical_protocol(tmp_path):
   output = tmp_path / 'evaluation'
 

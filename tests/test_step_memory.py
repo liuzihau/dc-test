@@ -9,7 +9,7 @@ from models.dit import (
 )
 
 
-def make_block(enabled=True):
+def make_block(enabled=True, gate_enabled=False, gate_init=0.1):
   block = DDiTBlock(
     n=2,
     dim=8,
@@ -20,7 +20,9 @@ def make_block(enabled=True):
     attn_backend='sdpa',
     step_memory_enabled=enabled,
     dc_spatial_rope_dim=2,
-    dc_temporal_rope_dim=2)
+    dc_temporal_rope_dim=2,
+    step_memory_gate_enabled=gate_enabled,
+    step_memory_gate_init=gate_init)
   block.eval()
   return block
 
@@ -113,6 +115,43 @@ def test_temporal_rope_distinguishes_previous_and_current_roles():
 
   torch.testing.assert_close(previous[..., :2], current[..., :2])
   assert not torch.allclose(previous[..., 2:], current[..., 2:])
+
+
+def test_source_mask_removes_disallowed_kv_before_softmax():
+  torch.manual_seed(4)
+  block = make_block(enabled=True)
+  current = torch.randn(2, 2, 8)
+  previous_a = torch.randn(2, 2, 2, 2, 4)
+  previous_b = torch.randn(2, 2, 2, 2, 4)
+  current_only = torch.full((2, 2), 2, dtype=torch.int8)
+  cache_only = torch.full((2, 2), 1, dtype=torch.int8)
+
+  current_a = block(
+    current, rotary_for(current), c=None, sample_mode=True,
+    previous_step_kv=previous_a,
+    step_memory_source_mask=current_only)
+  current_b = block(
+    current, rotary_for(current), c=None, sample_mode=True,
+    previous_step_kv=previous_b,
+    step_memory_source_mask=current_only)
+  cache_a = block(
+    current, rotary_for(current), c=None, sample_mode=True,
+    previous_step_kv=previous_a,
+    step_memory_source_mask=cache_only)
+  cache_b = block(
+    current, rotary_for(current), c=None, sample_mode=True,
+    previous_step_kv=previous_b,
+    step_memory_source_mask=cache_only)
+
+  torch.testing.assert_close(current_a, current_b, rtol=0, atol=0)
+  assert not torch.allclose(cache_a, cache_b)
+
+
+def test_step_memory_gate_uses_requested_effective_initial_value():
+  block = make_block(enabled=True, gate_enabled=True, gate_init=0.1)
+
+  torch.testing.assert_close(
+    torch.tanh(block.step_memory_gate), torch.tensor(0.1))
 
 
 def test_full_dit_supports_base_training_and_recurrent_sampling_shapes():

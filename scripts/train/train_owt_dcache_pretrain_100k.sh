@@ -3,9 +3,9 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DATA_DIR="${DCACHE_DATA_DIR:-${REPO_DIR}/.cache/huggingface}"
-RUN_DIR="${DCACHE_RUN_DIR:-${REPO_DIR}/outputs/owt-dcache-pretrain-100k}"
+RUN_DIR="${DCACHE_RUN_DIR:-${REPO_DIR}/outputs/owt-dcache-v2-pretrain-100k}"
 DEVICES="${DCACHE_DEVICES:-4}"
-MICRO_BATCH="${DCACHE_MICRO_BATCH:-4}"
+MICRO_BATCH="${DCACHE_MICRO_BATCH:-2}"
 GLOBAL_BATCH="${DCACHE_GLOBAL_BATCH:-512}"
 MAX_STEPS="${DCACHE_MAX_STEPS:-100000}"
 VAL_OPTIMIZER_INTERVAL="${DCACHE_VAL_INTERVAL:-10000}"
@@ -54,12 +54,26 @@ echo "Validation every ${VAL_OPTIMIZER_INTERVAL} optimizer steps (${VAL_TRAIN_BA
   step_memory.enabled=true \
   step_memory.use_previous_kv=true \
   step_memory.detach_between_steps=true \
+  step_memory.gate.enabled=true \
+  step_memory.gate.init=0.1 \
   step_memory.pretrain.enabled=true \
-  step_memory.pretrain.full_loss_weight=0.1 \
-  step_memory.pretrain.s_loss_weight=1.0 \
-  step_memory.pretrain.t_loss_weight=1.0 \
-  step_memory.pretrain.min_mask_ratio=0.001 \
+  step_memory.pretrain.step_size_min=0.025 \
+  step_memory.pretrain.step_size_max=0.10 \
+  step_memory.pretrain.max_t0_mask_ratio=0.9975 \
+  step_memory.pretrain.full_loss_weight=0.05 \
+  step_memory.pretrain.t0_loss_weight=0.10 \
+  step_memory.pretrain.t1_loss_weight=0.20 \
+  step_memory.pretrain.t2_loss_weight=1.00 \
+  step_memory.pretrain.t3_loss_weight=0.70 \
   step_memory.pretrain.teacher_token_probability=1.0 \
+  step_memory.pretrain.source_dropout.enabled=true \
+  step_memory.pretrain.source_dropout.cache_only_probability=0.20 \
+  step_memory.pretrain.source_dropout.current_only_probability=0.05 \
+  step_memory.pretrain.source_dropout.warmup_steps=1000 \
+  step_memory.pretrain.identity.enabled=true \
+  step_memory.pretrain.identity.batch_probability=0.25 \
+  step_memory.pretrain.identity.margin=0.05 \
+  step_memory.pretrain.identity.weight=0.10 \
   step_memory.rollout.enabled=false \
   wandb=null \
   "$@"

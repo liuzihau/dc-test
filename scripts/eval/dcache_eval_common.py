@@ -48,6 +48,7 @@ def compose_eval_config(
     data_dir: pathlib.Path,
     recurrent: bool,
     num_workers: int = 2,
+    gate_enabled: bool = False,
 ):
   """Compose the exact small/MDLM/1024 configuration used by both runs."""
   register_resolvers()
@@ -76,6 +77,8 @@ def compose_eval_config(
         'training.from_pretrained=null',
         f'step_memory.enabled={recurrent_text}',
         f'step_memory.pretrain.enabled={recurrent_text}',
+        f'step_memory.gate.enabled={str(gate_enabled).lower()}',
+        'step_memory.gate.init=0.1',
         'step_memory.use_previous_kv=true',
         'step_memory.detach_between_steps=true',
         'step_memory.pretrain.teacher_token_probability=1.0',
@@ -428,6 +431,9 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
   parser.add_argument('--seed', type=int, default=20260812)
   parser.add_argument('--bootstrap-samples', type=int, default=10_000)
   parser.add_argument('--device', default='cuda:0')
+  parser.add_argument(
+    '--dcache-gate-enabled', action='store_true',
+    help='Compose the gated DCache-v2 architecture for the DCache checkpoint.')
   parser.add_argument('--force', action='store_true')
 
 

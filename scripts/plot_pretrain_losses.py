@@ -76,6 +76,13 @@ def print_latest(label, row, metric):
     print(f'{label}: step={int(row.step)} {metric}={row[metric]:.6f}')
 
 
+def first_available_metric(frame, candidates):
+  for metric in candidates:
+    if not metric_series(frame, metric).empty:
+      return metric
+  return candidates[0]
+
+
 def main():
   parser = argparse.ArgumentParser()
   parser.add_argument('--vanilla', required=True,
@@ -89,13 +96,16 @@ def main():
 
   vanilla = load_metrics(args.vanilla)
   dcache = load_metrics(args.dcache)
+  dcache_train_metric = first_available_metric(
+    dcache, ('trainer/loss_t2', 'trainer/loss_s'))
   figure, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
 
   vanilla_train = plot_training(
     axes[0], vanilla, 'trainer/loss', 'Vanilla train loss', '#1f77b4',
     args.smooth)
   dcache_train = plot_training(
-    axes[0], dcache, 'trainer/loss_s', 'DCache train loss_s', '#ff7f0e',
+    axes[0], dcache, dcache_train_metric,
+    f'DCache train {dcache_train_metric.removeprefix("trainer/")}', '#ff7f0e',
     args.smooth)
   total = metric_series(dcache, 'trainer/loss')
   if not total.empty:
@@ -112,7 +122,7 @@ def main():
   vanilla_val = plot_validation(
     axes[1], vanilla, 'val/nll', 'Vanilla validation NLL', '#1f77b4')
   dcache_val = plot_validation(
-    axes[1], dcache, 'val/nll', 'DCache validation NLL at s', '#ff7f0e')
+    axes[1], dcache, 'val/nll', 'DCache validation NLL at t2', '#ff7f0e')
   axes[1].set_xlabel('Optimizer step')
   axes[1].set_ylabel('Validation NLL')
   axes[1].grid(alpha=0.25)
@@ -129,7 +139,7 @@ def main():
   plt.close(figure)
 
   print_latest('Vanilla training', vanilla_train, 'trainer/loss')
-  print_latest('DCache training', dcache_train, 'trainer/loss_s')
+  print_latest('DCache training', dcache_train, dcache_train_metric)
   print_latest('Vanilla validation', vanilla_val, 'val/nll')
   print_latest('DCache validation', dcache_val, 'val/nll')
   print(f'Wrote {output.resolve()}')

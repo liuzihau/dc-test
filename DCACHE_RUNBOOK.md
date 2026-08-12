@@ -1,5 +1,10 @@
 # Dcache environment and experiment runbook
 
+> **2026-08-12 DCache-v2 update:** For the current five-forward trajectory,
+> source dropout, cache-identity loss, residual gate, tested VRAM, and exact
+> launch/evaluation commands, read `DCACHE_V2_IMPLEMENTATION_WORK_NOTE.md`.
+> Older three-forward sections below are retained as v1 experiment history.
+
 ## Environment
 
 The tested environment is named `dcache`, uses Python 3.9, and follows the
