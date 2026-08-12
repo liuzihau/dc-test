@@ -144,14 +144,9 @@ conda activate dcache
 bash scripts/train/train_owt_dcache_pretrain_5k_2x4090.sh
 ```
 
-The current implementation is not yet committed, so `git clone` or `git pull`
-alone will not reproduce it on the second server. Copy the working tree first
-(replace the host and destination):
-
-```bash
-rsync -a --exclude .git --exclude outputs --exclude .cache \
-  /home/tliu0205/dc-test/ USER@GPU4090_HOST:/path/to/dc-test/
-```
+The implementation is tracked in Git, so use `git pull` to reproduce it on the
+second server. Untracked outputs, checkpoints, and the prepared data cache are
+not transferred by Git.
 
 If the machines do not share the prepared data cache, copy only the two
 prepared datasets (about 68 GiB total), rather than the entire Hugging Face
@@ -209,6 +204,88 @@ combines multiple Lightning CSV versions after resume, smooths the training
 curve, plots all available validation points, and prints the latest numeric
 values. Budget roughly 26--35 hours for vanilla on two 3090s and 51--61 hours
 for DCache on two 4090s, pending a short measurement on the actual machines.
+
+## Controlled teacher-forced evaluation of the two 5k checkpoints
+
+This evaluation compares our own step-5000 vanilla checkpoint with our own
+step-5000 DCache checkpoint. It does not use an official BD3 checkpoint. Both
+checkpoints are evaluated with EMA weights on the same first 800 prepared
+OpenWebText validation sequences, the same exact token masks, and seed
+`20260812`.
+
+First copy the vanilla checkpoint from the 3090 server to the 4090 server. On
+the 3090 server:
+
+```bash
+ssh jhua0805@gpu4-119-5.cs.usyd.edu.au \
+  'mkdir -p /share/home/jhua0805/nick_exp/dc-test/outputs/owt-mdlm-pretrain-5k-2x3090/checkpoints'
+rsync -a --partial --info=progress2 \
+  outputs/owt-mdlm-pretrain-5k-2x3090/checkpoints/last.ckpt \
+  jhua0805@gpu4-119-5.cs.usyd.edu.au:/share/home/jhua0805/nick_exp/dc-test/outputs/owt-mdlm-pretrain-5k-2x3090/checkpoints/
+```
+
+Then on the 4090 server:
+
+```bash
+cd /share/home/jhua0805/nick_exp/dc-test
+git pull
+eval "$(conda shell.bash hook)"
+conda activate dcache
+bash scripts/eval/run_5k_teacher_forced_evals.sh parallel
+```
+
+The parallel command assigns the fixed-corruption evaluation to physical CUDA
+GPU 2 and the transition evaluation to physical CUDA GPU 3. Inside each
+process that physical GPU is correctly addressed as logical `cuda:0`. To run
+the two jobs one after the other instead:
+
+```bash
+bash scripts/eval/run_5k_teacher_forced_evals.sh sequential
+```
+
+The fixed-corruption evaluation uses mask ratios 5%, 10%, 20%, 30%, 50%, 70%,
+90%, and 100%. The vanilla model predicts directly from `x_r`. DCache is first
+run on the fully masked sequence to produce `M_full`, then predicts the exact
+same `x_r` either with `M_full` (the main condition) or without prior memory
+(the architectural ablation).
+
+The transition evaluation uses `(s,t)` mask-ratio pairs `(25%,5%)`,
+`(30%,10%)`, `(40%,20%)`, `(50%,30%)`, `(70%,50%)`, and `(90%,70%)`. The masks
+are nested: every position masked at `t` was also masked at `s`, and positions
+revealed between them contain the clean ground-truth token. Its DCache path is
+`100% -> M_full`, `x_s + M_full -> M_s`, then `x_t + M_s -> prediction`. At
+the identical `x_t`, it also measures no cache, a cache cyclically shuffled
+across documents in the batch, and a zero-valued cache. No-cache is the clean
+removal ablation; zero K/V entries are still present in the attention softmax,
+so zero-cache is only an extra diagnostic.
+
+This is teacher forcing only: all visible tokens are clean ground truth, and
+metrics are calculated only at positions that remain masked. `conditional_ppl`
+is `exp(raw masked-token NLL)`. It is not the diffusion-integrated `val/ppl`
+reported by the training loop, so compare it only across conditions at the
+same mask ratio. Reports include masked-token NLL, conditional PPL, top-1 and
+top-5 accuracy, per-document records, and paired 95% bootstrap intervals.
+
+Outputs are written to:
+
+```text
+outputs/eval-5k-teacher-forced/fixed-corruption/
+outputs/eval-5k-teacher-forced/transitions/
+```
+
+Each directory contains `summary.csv`, `paired_nll_differences.csv`,
+`per_document_metrics.csv`, a PNG plot, a reproducibility manifest, and atomic
+per-batch result parts. Re-running the same command resumes missing batches.
+To intentionally discard those parts and restart both evaluations, set
+`DCACHE_EVAL_FORCE=1`. Useful overrides include:
+
+```bash
+DCACHE_EVAL_EXAMPLES=800 \
+DCACHE_EVAL_BATCH=4 \
+DCACHE_FIXED_CUDA=2 \
+DCACHE_TRANSITION_CUDA=3 \
+bash scripts/eval/run_5k_teacher_forced_evals.sh parallel
+```
 
 ## Legacy block-16 end-to-end smoke check
 
