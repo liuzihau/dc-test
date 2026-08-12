@@ -5,7 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 # Current-server defaults for two 24 GB RTX 3090s. Select the physical GPUs
-# with CUDA_VISIBLE_DEVICES=2,3 when invoking this wrapper.
+# here so dataloader construction cannot accidentally see all four GPUs.
+export CUDA_VISIBLE_DEVICES="${DCACHE_CUDA_VISIBLE_DEVICES:-2,3}"
 export DCACHE_DEVICES="${DCACHE_DEVICES:-2}"
 export DCACHE_MAX_STEPS="${DCACHE_MAX_STEPS:-5000}"
 export DCACHE_MICRO_BATCH="${DCACHE_MICRO_BATCH:-2}"

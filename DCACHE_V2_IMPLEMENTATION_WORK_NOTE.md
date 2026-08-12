@@ -264,11 +264,13 @@ cd /home/tliu0205/dc-test
 source /home/tliu0205/miniconda3/etc/profile.d/conda.sh
 conda activate dcache
 
-CUDA_VISIBLE_DEVICES=2,3 \
 bash scripts/train/train_owt_dcache_v2_pretrain_5k_2x3090.sh
 ```
 
-This leaves physical GPUs 0 and 1 untouched. The output is:
+The wrapper internally sets `CUDA_VISIBLE_DEVICES=2,3`, so physical GPUs 0 and
+1 remain untouched. To select a different pair later, set
+`DCACHE_CUDA_VISIBLE_DEVICES`, for example
+`DCACHE_CUDA_VISIBLE_DEVICES=0,1`. The output is:
 
 ```text
 outputs/owt-dcache-v2-pretrain-5k-2x3090/
@@ -277,6 +279,12 @@ outputs/owt-dcache-v2-pretrain-5k-2x3090/
 Per-GPU microbatch remains 2 so shuffled-cache identity training is active.
 With two GPUs and global batch 512, Lightning uses 128 gradient-accumulation
 batches per optimizer update.
+
+The wrapper also verifies that PyTorch sees exactly two devices before loading
+the dataset. This prevents the opaque dataloader assertion caused when
+`trainer.devices=2` but all four physical GPUs remain visible. A real-data
+two-rank optimizer update on physical GPUs 2 and 3 passed after this check was
+added.
 
 The four-GPU wrapper remains available if the full server is used later.
 

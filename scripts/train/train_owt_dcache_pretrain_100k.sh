@@ -14,14 +14,30 @@ SANITY_VAL_STEPS="${DCACHE_SANITY_VAL_STEPS:-2}"
 CHECKPOINT_SAVE_TOP_K="${DCACHE_CHECKPOINT_SAVE_TOP_K:--1}"
 PYTHON_BIN="${DCACHE_PYTHON:-python}"
 
-PER_UPDATE_BATCHES=$(( (GLOBAL_BATCH + DEVICES * MICRO_BATCH - 1) / (DEVICES * MICRO_BATCH) ))
+LOCAL_UPDATE_BATCH=$(( DEVICES * MICRO_BATCH ))
+if (( GLOBAL_BATCH % LOCAL_UPDATE_BATCH != 0 )); then
+  echo "Global batch ${GLOBAL_BATCH} must be divisible by devices × microbatch (${LOCAL_UPDATE_BATCH})." >&2
+  exit 2
+fi
+PER_UPDATE_BATCHES=$(( GLOBAL_BATCH / LOCAL_UPDATE_BATCH ))
 VAL_TRAIN_BATCH_INTERVAL=$(( VAL_OPTIMIZER_INTERVAL * PER_UPDATE_BATCHES ))
 
 mkdir -p "$DATA_DIR" "$RUN_DIR"
 cd "$REPO_DIR"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
+VISIBLE_DEVICES="$("$PYTHON_BIN" -c 'import torch; print(torch.cuda.device_count())')"
+if [[ "$VISIBLE_DEVICES" != "$DEVICES" ]]; then
+  echo "Configured trainer.devices=${DEVICES}, but PyTorch sees ${VISIBLE_DEVICES} CUDA devices." >&2
+  echo "Set CUDA_VISIBLE_DEVICES to exactly ${DEVICES} GPUs before launching." >&2
+  exit 2
+fi
+echo "PyTorch sees ${VISIBLE_DEVICES} CUDA devices (CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all})."
 echo "Validation every ${VAL_OPTIMIZER_INTERVAL} optimizer steps (${VAL_TRAIN_BATCH_INTERVAL} training batches with accumulation ${PER_UPDATE_BATCHES})."
+if [[ "${DCACHE_PREFLIGHT_ONLY:-0}" == "1" ]]; then
+  echo "DCache launcher preflight passed; exiting before dataset/model startup."
+  exit 0
+fi
 
 "$PYTHON_BIN" -u main.py \
   mode=train \
