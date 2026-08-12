@@ -255,6 +255,39 @@ resumes from its `last.ckpt`. Resume is numerically the normal Lightning resume
 path, including optimizer, scheduler, EMA, and global step, although exact
 bitwise identity can still depend on data-loader worker state and CUDA kernels.
 
+### Current server: four RTX 3090s
+
+This checkout already contains both prepared OpenWebText caches. The dedicated
+local wrapper uses all four 24 GB GPUs while preserving global batch 512 and
+per-GPU microbatch 2:
+
+```bash
+cd /home/tliu0205/dc-test
+source /home/tliu0205/miniconda3/etc/profile.d/conda.sh
+conda activate dcache
+
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+bash scripts/train/train_owt_dcache_v2_pretrain_5k_4x3090.sh
+```
+
+Its checkpoint and CSV log are written below:
+
+```text
+outputs/owt-dcache-v2-pretrain-5k-4x3090/checkpoints/last.ckpt
+outputs/owt-dcache-v2-pretrain-5k-4x3090/run/lightning_logs/version_*/metrics.csv
+```
+
+Do not reduce `DCACHE_MICRO_BATCH` below 2 unless the shuffled-cache identity
+loss is intentionally being disabled. With four GPUs and microbatch 2, global
+batch 512 produces 64 gradient-accumulation batches per optimizer update.
+
+This wrapper was verified on 2026-08-12 with the real cached OpenWebText data:
+four NCCL ranks initialized, each rank used local batch 2 at length 1024, one
+complete DCache-v2 optimizer update and one validation batch finished, and both
+`last.ckpt` and the monitored checkpoint appeared in the expected output tree.
+The random-initialization health-run `val/nll` was 10.8249; it is not a quality
+measurement. All four GPUs were released after the test.
+
 ## 11. Plot during or after training
 
 ```bash
