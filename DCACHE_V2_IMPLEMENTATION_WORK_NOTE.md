@@ -257,6 +257,29 @@ bitwise identity can still depend on data-loader worker state and CUDA kernels.
 
 ### Current server: four RTX 3090s
 
+The preferred local allocation is now two RTX 3090s, physical devices 2 and 3:
+
+```bash
+cd /home/tliu0205/dc-test
+source /home/tliu0205/miniconda3/etc/profile.d/conda.sh
+conda activate dcache
+
+CUDA_VISIBLE_DEVICES=2,3 \
+bash scripts/train/train_owt_dcache_v2_pretrain_5k_2x3090.sh
+```
+
+This leaves physical GPUs 0 and 1 untouched. The output is:
+
+```text
+outputs/owt-dcache-v2-pretrain-5k-2x3090/
+```
+
+Per-GPU microbatch remains 2 so shuffled-cache identity training is active.
+With two GPUs and global batch 512, Lightning uses 128 gradient-accumulation
+batches per optimizer update.
+
+The four-GPU wrapper remains available if the full server is used later.
+
 This checkout already contains both prepared OpenWebText caches. The dedicated
 local wrapper uses all four 24 GB GPUs while preserving global batch 512 and
 per-GPU microbatch 2:
