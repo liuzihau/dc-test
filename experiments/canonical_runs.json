@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "comparison_step_limit": 5000,
+  "runs": [
+    {
+      "id": "bd3_vanilla",
+      "label": "BD3/MDLM vanilla",
+      "role": "baseline",
+      "path": "outputs/owt-mdlm-pretrain-5k-2x3090",
+      "train_metric": "trainer/loss",
+      "validation_metric": "val/nll",
+      "status": "complete"
+    },
+    {
+      "id": "objective_aligned",
+      "label": "Objective-aligned no-memory",
+      "role": "objective_ablation",
+      "path": "outputs/owt-mdlm-objective-matched-5k",
+      "train_metric": "trainer/loss_t2",
+      "validation_metric": "val/loss_t2",
+      "status": "complete"
+    },
+    {
+      "id": "dcache_v2",
+      "label": "DCache-v2",
+      "role": "layerwise_recurrent_memory",
+      "path": "outputs/owt-dcache-v2-pretrain-5k-2x3090",
+      "train_metric": "trainer/loss_t2",
+      "validation_metric": "val/loss_t2",
+      "status": "complete"
+    },
+    {
+      "id": "dcache_final_state",
+      "label": "DCache + final state",
+      "role": "dual_recurrent_memory",
+      "path": "outputs/owt-dcache-final-state-pretrain-5k-2x3090",
+      "train_metric": "trainer/loss_t2",
+      "validation_metric": "val/loss_t2",
+      "validation_supplement": {
+        "path": "outputs/eval-final-state-step5000-validation/summary.csv",
+        "step_column": "checkpoint_step",
+        "metric_column": "val_loss_t2"
+      },
+      "status": "complete"
+    }
+  ],
+  "evaluations": [
+    {
+      "id": "three_way_teacher_forced_5k",
+      "category": "matched_quality",
+      "path": "outputs/eval-three-way-5k-teacher-forced",
+      "status": "canonical"
+    },
+    {
+      "id": "dcache_v2_checkpoint_identity",
+      "category": "memory_identity",
+      "path": "outputs/eval-v2-checkpoint-trend",
+      "status": "canonical"
+    },
+    {
+      "id": "dcache_v2_same_state_recurrence",
+      "category": "causal_recurrence",
+      "path": "outputs/eval-v2-same-state-recurrence",
+      "status": "canonical"
+    }
+  ]
+}

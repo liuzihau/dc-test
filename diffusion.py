@@ -1,4 +1,5 @@
 import itertools
+import typing
 from dataclasses import dataclass
 
 import hydra.utils
@@ -17,8 +18,6 @@ import models
 import noise_schedule
 from rollout_utils import build_rollout_mask_counts
 import utils
-import numpy as np
-import itertools
 
 def _sample_categorical(categorical_probs):
   gumbel_norm = (1e-10 - (torch.rand_like(categorical_probs) + 1e-10).log())
@@ -36,6 +35,16 @@ class Loss:
   loss: torch.FloatTensor
   nlls: torch.FloatTensor
   token_mask: torch.FloatTensor
+
+
+@dataclass
+class DcachehoopingOutput:
+  """Processed model output plus recurrent workspace diagnostics."""
+  scores: torch.FloatTensor
+  editable_log_probs: typing.Optional[torch.FloatTensor]
+  step_kv: list
+  final_hidden: torch.FloatTensor
+  confidence_logits: typing.Optional[torch.FloatTensor]
 
 
 class Diffusion(L.LightningModule):
@@ -147,6 +156,58 @@ class Diffusion(L.LightningModule):
       getattr(self.config, 'step_memory', {}), 'rollout', {})
     pretrain_config = getattr(
       getattr(self.config, 'step_memory', {}), 'pretrain', {})
+    objective_matched_config = getattr(
+      getattr(self.config, 'training', {}),
+      'objective_matched_multistate', {})
+    objective_matched_enabled = bool(getattr(
+      objective_matched_config, 'enabled', False))
+    dcachehooping_config = getattr(self.config, 'dcachehooping', {})
+    dcachehooping_enabled = bool(getattr(
+      dcachehooping_config, 'enabled', False))
+    assert not (
+      objective_matched_enabled
+      and bool(getattr(pretrain_config, 'enabled', False))), (
+        'Objective-matched vanilla and DCache pretraining are mutually '
+        'exclusive')
+    if dcachehooping_enabled:
+      assert bool(getattr(pretrain_config, 'enabled', False)), (
+        'Dcachehooping extends DCache-v2 pretraining')
+      assert self.config.step_memory.enabled
+      assert self.config.step_memory.use_previous_kv
+      assert self.config.step_memory.detach_between_steps, (
+        'Dcachehooping requires detached recurrent sources')
+      assert not objective_matched_enabled
+      latent_dropout = float(
+        dcachehooping_config.latent_dropout_probability)
+      latent_mask_probability = float(
+        dcachehooping_config.latent_mask_probability)
+      assert 0 <= latent_dropout <= 1
+      assert 0 <= latent_mask_probability <= 1
+      assert float(dcachehooping_config.latent_mask_loss_weight) >= 0
+      tentative_config = dcachehooping_config.tentative
+      confidence_config = dcachehooping_config.confidence
+      status_config = getattr(
+        dcachehooping_config, 'status_embedding', {})
+      status_enabled = bool(getattr(status_config, 'enabled', True))
+      assert 0 <= float(tentative_config.batch_probability) <= 1
+      if bool(getattr(
+          dcachehooping_config, 'exclusive_auxiliary_routes', True)):
+        tentative_probability = (
+          float(tentative_config.batch_probability)
+          if bool(tentative_config.enabled) else 0.0)
+        assert latent_mask_probability + tentative_probability <= 1, (
+          'Exclusive Dcachehooping auxiliary probabilities must sum to <= 1')
+      assert float(tentative_config.loss_weight) >= 0
+      assert float(confidence_config.loss_weight) >= 0
+      assert not bool(confidence_config.enabled) or bool(
+        tentative_config.enabled), (
+          'Confidence supervision requires tentative proposals')
+      assert not bool(tentative_config.enabled) or status_enabled, (
+        'Tentative proposals require the token-status embedding')
+      assert latent_mask_probability == 0 or status_enabled, (
+        'Latent-mask robustness requires the token-status embedding')
+      assert 0 <= float(
+        dcachehooping_config.identity_final_probability) <= 1
     if bool(getattr(pretrain_config, 'enabled', False)):
       assert self.config.step_memory.enabled
       assert self.config.step_memory.use_previous_kv
@@ -186,6 +247,40 @@ class Diffusion(L.LightningModule):
       assert 0 <= float(identity_config.batch_probability) <= 1
       assert float(identity_config.margin) >= 0
       assert float(identity_config.weight) >= 0
+    if objective_matched_enabled:
+      assert not self.config.step_memory.enabled, (
+        'Objective-matched control must use the vanilla backbone')
+      assert not self.config.step_memory.use_previous_kv, (
+        'Objective-matched control must explicitly disable previous K/V')
+      assert self.config.algo.name == 'mdlm'
+      assert self.config.algo.backbone == 'dit'
+      assert self.block_size == self.config.model.length
+      assert not self.config.algo.cross_attn
+      assert self.config.noise.type == 'loglinear'
+      assert not self.config.sampling.kv_cache
+      assert not bool(getattr(rollout_config, 'enabled', False))
+      assert float(pretrain_config.teacher_token_probability) == 1.0, (
+        'Objective-matched multi-state training is fully teacher forced')
+      assert not bool(pretrain_config.source_dropout.enabled), (
+        'Source dropout is a cache-only treatment and must be disabled')
+      assert not bool(pretrain_config.identity.enabled), (
+        'Cache identity loss must be disabled for the vanilla control')
+      step_size_min = float(pretrain_config.step_size_min)
+      step_size_max = float(pretrain_config.step_size_max)
+      max_t0 = float(pretrain_config.max_t0_mask_ratio)
+      assert 0 < step_size_min <= step_size_max
+      assert max_t0 < 1.0
+      assert 3 * step_size_max <= max_t0, (
+        'Largest local step leaves no valid trajectory-center interval')
+      weights = [
+        float(pretrain_config.full_loss_weight),
+        float(pretrain_config.t0_loss_weight),
+        float(pretrain_config.t1_loss_weight),
+        float(pretrain_config.t2_loss_weight),
+        float(pretrain_config.t3_loss_weight),
+      ]
+      assert all(weight >= 0 for weight in weights)
+      assert sum(weights) > 0
     if bool(getattr(rollout_config, 'enabled', False)):
       assert self.config.step_memory.enabled
       assert self.config.algo.name == 'bd3lm'
@@ -393,13 +488,22 @@ class Diffusion(L.LightningModule):
   def forward(self, x, sigma, sample_mode=False, store_kv=False,
               previous_step_kv=None, return_step_kv=False,
               detach_cache_backbone=False,
-              step_memory_source_mask=None):
+              step_memory_source_mask=None,
+              previous_final_hidden=None, token_status=None,
+              return_dcachehooping=False,
+              return_editable_log_probs=False,
+              return_confidence_logits=False):
     """Returns log score."""
+    if (return_editable_log_probs or return_confidence_logits) \
+        and not return_dcachehooping:
+      raise ValueError(
+        'Optional Dcachehooping outputs require return_dcachehooping=true')
     sigma = self._process_sigma(sigma)
     with torch.amp.autocast('cuda', dtype=torch.float32):
       if self.config.algo.name in {'bd3lm', 'mdlm'}:
         if self.config.algo.backbone == 'hf_dit':
-          if previous_step_kv is not None or return_step_kv:
+          if (previous_step_kv is not None or return_step_kv
+              or previous_final_hidden is not None or return_dcachehooping):
             raise NotImplementedError(
               'step_memory is currently implemented for the native dit backbone')
           if self.config.algo.name == 'bd3lm':
@@ -415,8 +519,17 @@ class Diffusion(L.LightningModule):
             previous_step_kv=previous_step_kv,
             return_step_kv=return_step_kv,
             detach_cache_backbone=detach_cache_backbone,
-            step_memory_source_mask=step_memory_source_mask)
-        if return_step_kv:
+            step_memory_source_mask=step_memory_source_mask,
+            previous_final_hidden=previous_final_hidden,
+            token_status=token_status,
+            return_dcachehooping=return_dcachehooping,
+            return_confidence_logits=return_confidence_logits)
+        if return_dcachehooping:
+          logits = backbone_output.logits
+          next_step_kv = backbone_output.step_kv
+          final_hidden = backbone_output.final_hidden
+          confidence_logits = backbone_output.confidence_logits
+        elif return_step_kv:
           logits, next_step_kv = backbone_output
         else:
           logits = backbone_output
@@ -432,12 +545,24 @@ class Diffusion(L.LightningModule):
 
     if self.cross_attn:
       x = x[:, :self.config.model.length]
+    editable_log_probs = None
+    if return_editable_log_probs:
+      editable_logits = logits.clone()
+      editable_logits[:, :, self.mask_index] = self.neg_infinity
+      editable_log_probs = editable_logits.log_softmax(dim=-1)
     if self.parameterization == 'subs':
       scores = self._subs_parameterization(logits=logits, xt=x)
     elif self.parameterization == 'sedd':
       scores = self._sedd_parameterization(logits=logits, xt=x, sigma=sigma)
     else:
       scores = logits
+    if return_dcachehooping:
+      return DcachehoopingOutput(
+        scores=scores,
+        editable_log_probs=editable_log_probs,
+        step_kv=next_step_kv,
+        final_hidden=final_hidden,
+        confidence_logits=confidence_logits)
     if return_step_kv:
       return scores, next_step_kv
     return scores
@@ -599,6 +724,25 @@ class Diffusion(L.LightningModule):
     return Loss(
       loss=token_nll, nlls=nlls, token_mask=attention_mask), \
       next_step_kv, model_output
+
+  def _independent_pretrain_state_loss(
+      self, x0, state, attention_mask, time):
+    """Evaluate one explicit teacher-forced state with vanilla MDLM only.
+
+    This deliberately does not pass any step-memory arguments to `forward`.
+    Combined with the configuration invariant that step memory is disabled,
+    this guarantees the objective-matched control cannot write or consume a
+    denoising cache.
+    """
+    loss_scale, probability = self.noise(time)
+    sigma = self._sigma_from_p(probability[:, 0].unsqueeze(-1))
+    model_output = self.forward(state, sigma=sigma, sample_mode=True)
+    target_log_probability = torch.gather(
+      model_output, -1, x0[:, :, None]).squeeze(-1)
+    nlls = loss_scale * target_log_probability * attention_mask
+    token_nll = nlls.sum() / attention_mask.sum()
+    return Loss(
+      loss=token_nll, nlls=nlls, token_mask=attention_mask)
 
   def _sample_local_step_trajectory(self, x0, attention_mask):
     """Sample exact nested masks for full -> t0 -> t1 -> t2 -> t3.
@@ -882,6 +1026,507 @@ class Diffusion(L.LightningModule):
     # t2 has the largest trajectory weight and a twice-warmed cache. Keep it
     # as the validation/training reference Loss used by the metric accumulator.
     return total_loss, state_losses[2], diagnostics
+
+  @staticmethod
+  def _shuffle_hidden_across_batch(hidden):
+    batch_size = hidden.shape[0]
+    if batch_size < 2:
+      raise ValueError('Shuffled latent identity loss requires batch size >= 2')
+    shift = int(torch.randint(
+      1, batch_size, (), device=hidden.device).item())
+    return hidden.roll(shifts=shift, dims=0)
+
+  def _dcachehooping_status(self, state, tentative_mask=None):
+    """Return mask=0, committed=1, tentative=2 status identifiers."""
+    status_config = getattr(
+      self.config.dcachehooping, 'status_embedding', {})
+    if not bool(getattr(status_config, 'enabled', True)):
+      return None
+    status = state.ne(self.mask_index).long()
+    if tentative_mask is not None:
+      status = status.masked_fill(tentative_mask, 2)
+    return status
+
+  def _dcachehooping_state_loss(
+      self, x0, state, attention_mask, time, previous_step_kv,
+      previous_final_hidden, return_step_kv, token_status,
+      step_memory_source_mask=None, loss_token_mask=None,
+      return_editable_log_probs=False,
+      return_confidence_logits=False):
+    """Evaluate one state while returning both recurrent workspace sources."""
+    loss_scale, probability = self.noise(time)
+    sigma = self._sigma_from_p(probability[:, 0].unsqueeze(-1))
+    output = self.forward(
+      state,
+      sigma=sigma,
+      sample_mode=True,
+      previous_step_kv=previous_step_kv,
+      return_step_kv=return_step_kv,
+      detach_cache_backbone=bool(
+        self.config.step_memory.detach_between_steps),
+      step_memory_source_mask=step_memory_source_mask,
+      previous_final_hidden=previous_final_hidden,
+      token_status=token_status,
+      return_dcachehooping=True,
+      return_editable_log_probs=return_editable_log_probs,
+      return_confidence_logits=return_confidence_logits)
+    target_log_probability = torch.gather(
+      output.scores, -1, x0[:, :, None]).squeeze(-1)
+    if loss_token_mask is None:
+      loss_token_mask = attention_mask
+    loss_token_mask = loss_token_mask.to(target_log_probability.dtype)
+    nlls = loss_scale * target_log_probability * loss_token_mask
+    token_nll = nlls.sum() / loss_token_mask.sum().clamp_min(1)
+    return Loss(
+      loss=token_nll, nlls=nlls, token_mask=loss_token_mask), output
+
+  @staticmethod
+  def _masked_mean(values, mask):
+    mask = mask.to(values.dtype)
+    return (values * mask).sum() / mask.sum().clamp_min(1)
+
+  @staticmethod
+  def _distributed_metric_ratio(numerator, denominator):
+    """Return an exact DDP-global diagnostic ratio without gradient use."""
+    numerator = numerator.detach().float().clone()
+    denominator = denominator.detach().float().clone()
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+      torch.distributed.all_reduce(
+        numerator, op=torch.distributed.ReduceOp.SUM)
+      torch.distributed.all_reduce(
+        denominator, op=torch.distributed.ReduceOp.SUM)
+    return numerator / denominator.clamp_min(1), denominator
+
+  @staticmethod
+  def _sample_synchronized_uniform(device):
+    """Sample one uniform scalar shared by every DDP rank."""
+    random_value = torch.rand((), device=device)
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+      torch.distributed.broadcast(random_value, src=0)
+    return float(random_value)
+
+  @classmethod
+  def _sample_synchronized_event(cls, probability, device):
+    """Sample one batch event shared by every DDP rank."""
+    return cls._sample_synchronized_uniform(device) < float(probability)
+
+  def _dcachehooping_tentative_losses(
+      self, x0, candidate_tokens, tentative_mask, output, eligible):
+    """Direct correction CE and RemeDi-style token confidence targets."""
+    target_log_probability = torch.gather(
+      output.editable_log_probs, -1, x0[:, :, None]).squeeze(-1)
+    tentative_loss = -self._masked_mean(
+      target_log_probability, tentative_mask)
+
+    after_tokens = output.editable_log_probs.argmax(dim=-1)
+    candidate_correct = candidate_tokens.eq(x0) & tentative_mask
+    candidate_wrong = ~candidate_tokens.eq(x0) & tentative_mask
+    after_correct = after_tokens.eq(x0)
+    before_accuracy, tentative_count = self._distributed_metric_ratio(
+      candidate_correct.float().sum(), tentative_mask.float().sum())
+    after_accuracy, _ = self._distributed_metric_ratio(
+      (after_correct & tentative_mask).float().sum(),
+      tentative_mask.float().sum())
+    wrong_fix_rate, tentative_wrong_count = \
+      self._distributed_metric_ratio(
+        (after_correct & candidate_wrong).float().sum(),
+        candidate_wrong.float().sum())
+    correct_keep_rate, _ = self._distributed_metric_ratio(
+      (after_correct & candidate_correct).float().sum(),
+      candidate_correct.float().sum())
+
+    confidence_loss = torch.zeros((), device=x0.device)
+    confidence_brier = confidence_loss.clone()
+    tentative_confidence_correct = confidence_loss.clone()
+    tentative_confidence_wrong = confidence_loss.clone()
+    if output.confidence_logits is not None:
+      # Confidence means "the current/proposed token can be trusted". Clean
+      # visible tokens are positive, incorrect tentative tokens are negative,
+      # and masks receive the detached probability of their clean target.
+      visible = candidate_tokens.ne(self.mask_index)
+      confidence_target = torch.ones_like(
+        output.confidence_logits, dtype=torch.float32)
+      confidence_target = torch.where(
+        tentative_mask,
+        candidate_tokens.eq(x0).to(confidence_target.dtype),
+        confidence_target)
+      masked = ~visible
+      masked_soft_target = target_log_probability.detach().exp()
+      confidence_target = torch.where(
+        masked, masked_soft_target, confidence_target)
+      confidence_mask = eligible.bool()
+      confidence_bce = F.binary_cross_entropy_with_logits(
+        output.confidence_logits,
+        confidence_target.to(output.confidence_logits.dtype),
+        reduction='none')
+      confidence_loss = self._masked_mean(
+        confidence_bce, confidence_mask)
+      confidence_probability = output.confidence_logits.sigmoid()
+      confidence_brier = self._masked_mean(
+        (confidence_probability - confidence_target) ** 2,
+        confidence_mask)
+      tentative_confidence_correct, _ = self._distributed_metric_ratio(
+        (confidence_probability * candidate_correct).sum(),
+        candidate_correct.float().sum())
+      tentative_confidence_wrong, _ = self._distributed_metric_ratio(
+        (confidence_probability * candidate_wrong).sum(),
+        candidate_wrong.float().sum())
+    return tentative_loss, confidence_loss, {
+      'tentative_count': tentative_count,
+      'tentative_wrong_count': tentative_wrong_count,
+      'tentative_before_accuracy': before_accuracy.detach(),
+      'tentative_after_accuracy': after_accuracy.detach(),
+      'tentative_wrong_fix_rate': wrong_fix_rate.detach(),
+      'tentative_correct_keep_rate': correct_keep_rate.detach(),
+      'confidence_brier': confidence_brier.detach(),
+      'confidence_correct_mean': tentative_confidence_correct.detach(),
+      'confidence_wrong_mean': tentative_confidence_wrong.detach(),
+    }
+
+  def _dcachehooping_pretrain_loss(self, x0, attention_mask):
+    """DCache-v2 plus detached final-state memory and direct correction."""
+    x0, _, attention_mask = self._maybe_sub_sample(x0, attention_mask)
+    attention_mask = attention_mask.to(dtype=torch.float32)
+    eligible = attention_mask.bool().clone()
+    if self.ignore_bos:
+      eligible[:, 0] = False
+    batch_size = x0.shape[0]
+    trajectory = self._sample_local_step_trajectory(x0, attention_mask)
+    full_state = torch.where(eligible, self.mask_index, x0)
+    full_time = torch.ones(
+      (batch_size, 1), device=x0.device, dtype=torch.float32)
+    config = self.config.step_memory.pretrain
+    hooping_config = self.config.dcachehooping
+    tentative_config = hooping_config.tentative
+
+    # A single categorical draw preserves both marginal supervision rates but
+    # prevents the two extra trainable transformer graphs from being live at
+    # once. This is important on 24 GiB GPUs and avoids attaching two distinct
+    # auxiliary objectives to an arbitrary small subset of examples.
+    if self.training and bool(getattr(
+        hooping_config, 'exclusive_auxiliary_routes', True)):
+      auxiliary_draw = self._sample_synchronized_uniform(x0.device)
+      tentative_probability = (
+        float(tentative_config.batch_probability)
+        if bool(tentative_config.enabled) else 0.0)
+      apply_tentative = auxiliary_draw < tentative_probability
+      apply_latent_mask = (
+        tentative_probability <= auxiliary_draw
+        < tentative_probability + float(
+          hooping_config.latent_mask_probability))
+    else:
+      apply_latent_mask = (
+        self.training and self._sample_synchronized_event(
+          hooping_config.latent_mask_probability, x0.device))
+      apply_tentative = (
+        bool(tentative_config.enabled)
+        and (not self.training or self._sample_synchronized_event(
+          tentative_config.batch_probability, x0.device)))
+
+    drop_latent = (
+      self.training and self._sample_synchronized_event(
+        hooping_config.latent_dropout_probability, x0.device))
+
+    full_loss, full_output = self._dcachehooping_state_loss(
+      x0, full_state, attention_mask, full_time,
+      previous_step_kv=None,
+      previous_final_hidden=None,
+      return_step_kv=True,
+      token_status=self._dcachehooping_status(full_state))
+    previous_cache = full_output.step_kv
+    previous_hidden = full_output.final_hidden.detach()
+
+    state_weights = [
+      float(config.t0_loss_weight),
+      float(config.t1_loss_weight),
+      float(config.t2_loss_weight),
+      float(config.t3_loss_weight),
+    ]
+    state_losses = []
+    source_masks = []
+    source_diagnostics = []
+    t2_output = None
+    t2_cache = None
+    t2_hidden = None
+    t3_output = None
+    for state_index, (state, mask) in enumerate(zip(
+        trajectory['states'], trajectory['masks'])):
+      source_mask = None
+      dropout_diagnostics = {
+        'cache_only_probability': torch.tensor(0.0, device=x0.device),
+        'cache_only_fraction': torch.tensor(0.0, device=x0.device),
+        'current_only_fraction': torch.tensor(0.0, device=x0.device),
+      }
+      if state_index >= 2:
+        source_mask, dropout_diagnostics = self._source_dropout_mask(mask)
+      return_cache = state_index < 3
+      state_loss, state_output = self._dcachehooping_state_loss(
+        x0, state, attention_mask,
+        trajectory['ratios'][:, state_index:state_index + 1],
+        previous_step_kv=previous_cache,
+        previous_final_hidden=(None if drop_latent else previous_hidden),
+        return_step_kv=return_cache,
+        token_status=self._dcachehooping_status(state),
+        step_memory_source_mask=source_mask,
+        # Only t2 proposes tokens, and only on a tentative-route batch.
+        return_editable_log_probs=(apply_tentative and state_index == 2))
+      state_losses.append(state_loss)
+      source_masks.append(source_mask)
+      source_diagnostics.append(dropout_diagnostics)
+      if state_index == 2:
+        t2_output = state_output
+        t2_cache = state_output.step_kv
+        t2_hidden = state_output.final_hidden.detach()
+      if state_index == 3:
+        t3_output = state_output
+      previous_cache = state_output.step_kv
+      previous_hidden = state_output.final_hidden.detach()
+
+    full_weight = float(config.full_loss_weight)
+    weight_sum = full_weight + sum(state_weights)
+    if weight_sum <= 0:
+      raise ValueError('Dcachehooping base loss weights must sum positive')
+    base_loss = (
+      full_weight * full_loss.loss
+      + sum(weight * loss.loss for weight, loss in zip(
+        state_weights, state_losses))) / weight_sum
+
+    zero = torch.zeros((), device=x0.device)
+    latent_mask_loss = zero
+    latent_mask_applied = zero.clone()
+    if apply_latent_mask:
+      latent_mask_applied.fill_(1.0)
+      lexical_mask_state = torch.where(eligible, self.mask_index, x0)
+      latent_mask_loss_struct, _ = self._dcachehooping_state_loss(
+        x0, lexical_mask_state, attention_mask,
+        trajectory['ratios'][:, 2:3],
+        previous_step_kv=None,
+        previous_final_hidden=t2_hidden,
+        return_step_kv=False,
+        # Keep the logical state even though the lexical identity is hidden.
+        token_status=self._dcachehooping_status(
+          trajectory['states'][2]),
+        loss_token_mask=trajectory['masks'][2] & eligible)
+      latent_mask_loss = latent_mask_loss_struct.loss
+
+    tentative_loss = zero
+    confidence_loss = zero
+    tentative_applied = zero.clone()
+    tentative_metrics = {
+      name: zero.clone() for name in [
+        'tentative_count', 'tentative_wrong_count',
+        'tentative_before_accuracy', 'tentative_after_accuracy',
+        'tentative_wrong_fix_rate', 'tentative_correct_keep_rate',
+        'confidence_brier', 'confidence_correct_mean',
+        'confidence_wrong_mean']}
+    if apply_tentative:
+      tentative_applied.fill_(1.0)
+      tentative_mask = (
+        trajectory['masks'][2]
+        & ~trajectory['masks'][3]
+        & eligible)
+      candidate_tokens = t2_output.editable_log_probs.detach().argmax(dim=-1)
+      tentative_state = trajectory['states'][3].clone()
+      tentative_state[tentative_mask] = candidate_tokens[tentative_mask]
+      tentative_status = self._dcachehooping_status(
+        tentative_state, tentative_mask=tentative_mask)
+      _, tentative_output = self._dcachehooping_state_loss(
+        x0, tentative_state, attention_mask,
+        trajectory['ratios'][:, 3:4],
+        previous_step_kv=t2_cache,
+        previous_final_hidden=t2_hidden,
+        return_step_kv=False,
+        token_status=tentative_status,
+        return_editable_log_probs=True,
+        return_confidence_logits=bool(
+          hooping_config.confidence.enabled))
+      tentative_loss, confidence_loss, tentative_metrics = \
+        self._dcachehooping_tentative_losses(
+          x0, tentative_state, tentative_mask,
+          tentative_output, eligible)
+      if not bool(hooping_config.confidence.enabled):
+        confidence_loss = zero
+
+    identity_config = config.identity
+    identity_loss = zero
+    identity_correct_nll = zero
+    identity_shuffled_nll = zero
+    identity_applied = zero.clone()
+    identity_final_source = zero.clone()
+    apply_identity = (
+      self.training
+      and bool(identity_config.enabled)
+      and batch_size >= 2
+      and self._sample_synchronized_event(
+        identity_config.batch_probability, x0.device))
+    if apply_identity:
+      shuffle_final = (
+        not drop_latent
+        and self._sample_synchronized_event(
+          hooping_config.identity_final_probability, x0.device))
+      identity_final_source.fill_(float(shuffle_final))
+      identity_cache = t2_cache
+      identity_hidden = None if drop_latent else t2_hidden
+      if shuffle_final:
+        identity_hidden = self._shuffle_hidden_across_batch(t2_hidden)
+      else:
+        identity_cache = self._shuffle_cache_across_batch(t2_cache)
+      with torch.no_grad():
+        shuffled_output = self.forward(
+          trajectory['states'][3],
+          sigma=self._sigma_from_p(trajectory['ratios'][:, 3:4]),
+          sample_mode=True,
+          previous_step_kv=identity_cache,
+          return_step_kv=False,
+          step_memory_source_mask=source_masks[3],
+          previous_final_hidden=identity_hidden,
+          token_status=self._dcachehooping_status(
+            trajectory['states'][3]))
+      identity_mask = trajectory['masks'][3] & eligible
+      if source_masks[3] is not None:
+        identity_mask = identity_mask & source_masks[3].ne(2)
+      valid_examples = identity_mask.any(dim=-1)
+      if valid_examples.any():
+        identity_applied.fill_(1.0)
+        correct_per_example = self._per_example_raw_masked_nll(
+          t3_output.scores, x0, identity_mask)[valid_examples]
+        shuffled_per_example = self._per_example_raw_masked_nll(
+          shuffled_output, x0, identity_mask)[valid_examples]
+        identity_correct_nll = correct_per_example.mean()
+        identity_shuffled_nll = shuffled_per_example.mean()
+        identity_loss = torch.relu(
+          float(identity_config.margin)
+          + correct_per_example
+          - shuffled_per_example.detach()).mean()
+
+    # DDP uses find_unused_parameters=false. Auxiliary routes are sampled, so
+    # keep every optional parameter in every autograd graph with zero gradient
+    # on batches where its route is absent. This avoids a reduction failure on
+    # the next update without changing the objective.
+    optional_parameter_anchor = sum(
+      parameter.sum() * 0.0
+      for name, parameter in self.backbone.named_parameters()
+      if 'dcachehooping_' in name)
+    total_loss = (
+      base_loss
+      + float(hooping_config.latent_mask_loss_weight) * latent_mask_loss
+      + float(tentative_config.loss_weight) * tentative_loss
+      + float(hooping_config.confidence.loss_weight) * confidence_loss
+      + float(identity_config.weight) * identity_loss
+      + optional_parameter_anchor)
+
+    cache_only_fraction = torch.stack([
+      item['cache_only_fraction'] for item in source_diagnostics[2:]]).mean()
+    current_only_fraction = torch.stack([
+      item['current_only_fraction'] for item in source_diagnostics[2:]]).mean()
+    diagnostics = {
+      'loss_full': full_loss.loss.detach(),
+      'loss_t0': state_losses[0].loss.detach(),
+      'loss_t1': state_losses[1].loss.detach(),
+      'loss_t2': state_losses[2].loss.detach(),
+      'loss_t3': state_losses[3].loss.detach(),
+      'mask_ratio_t0': trajectory['ratios'][:, 0].mean(),
+      'mask_ratio_t1': trajectory['ratios'][:, 1].mean(),
+      'mask_ratio_t2': trajectory['ratios'][:, 2].mean(),
+      'mask_ratio_t3': trajectory['ratios'][:, 3].mean(),
+      'step_size': trajectory['step_size'].mean(),
+      'revealed_tokens': (
+        trajectory['mask_counts'][:, :-1]
+        - trajectory['mask_counts'][:, 1:]).float().mean(),
+      'remaining_masks': trajectory['mask_counts'][:, 3].float().mean(),
+      'source_cache_only_probability': source_diagnostics[2][
+        'cache_only_probability'],
+      'source_cache_only_fraction': cache_only_fraction,
+      'source_current_only_fraction': current_only_fraction,
+      'latent_dropped': torch.tensor(
+        float(drop_latent), device=x0.device),
+      'latent_mask_applied': latent_mask_applied,
+      'latent_mask_loss': latent_mask_loss.detach(),
+      'tentative_applied': tentative_applied,
+      'tentative_loss': tentative_loss.detach(),
+      'confidence_loss': confidence_loss.detach(),
+      'identity_loss': identity_loss.detach(),
+      'identity_applied': identity_applied,
+      'identity_final_source': identity_final_source,
+      'identity_correct_nll': identity_correct_nll.detach(),
+      'identity_shuffled_nll': identity_shuffled_nll.detach(),
+      'identity_gain': (
+        identity_shuffled_nll - identity_correct_nll).detach(),
+      'gate_mean': self._step_memory_gate_mean().detach(),
+      'loss_base': base_loss.detach(),
+      'loss_total': total_loss.detach(),
+    }
+    diagnostics.update(tentative_metrics)
+    return total_loss, state_losses[2], diagnostics
+
+  def _objective_matched_multistate_loss(self, x0, attention_mask):
+    """Five-state vanilla control matched to the DCache base objective.
+
+    The full, t0, t1, t2, and t3 states use the exact same trajectory sampler
+    and normalized token-loss weights as DCache-v2. Every forward is
+    independent: the vanilla backbone has no DCache parameters, and no cache
+    is written or supplied between states.
+    """
+    if self.config.step_memory.enabled:
+      raise RuntimeError(
+        'Objective-matched vanilla loss requires step memory to be disabled')
+    x0, _, attention_mask = self._maybe_sub_sample(x0, attention_mask)
+    attention_mask = attention_mask.to(dtype=torch.float32)
+    batch_size = x0.shape[0]
+    trajectory = self._sample_local_step_trajectory(x0, attention_mask)
+    eligible = trajectory['eligible']
+    full_state = torch.where(eligible, self.mask_index, x0)
+    full_time = torch.ones(
+      (batch_size, 1), device=x0.device, dtype=torch.float32)
+
+    full_loss = self._independent_pretrain_state_loss(
+      x0, full_state, attention_mask, full_time)
+    state_losses = []
+    for state_index, state in enumerate(trajectory['states']):
+      state_losses.append(self._independent_pretrain_state_loss(
+        x0,
+        state,
+        attention_mask,
+        trajectory['ratios'][:, state_index:state_index + 1]))
+
+    config = self.config.step_memory.pretrain
+    full_weight = float(config.full_loss_weight)
+    state_weights = [
+      float(config.t0_loss_weight),
+      float(config.t1_loss_weight),
+      float(config.t2_loss_weight),
+      float(config.t3_loss_weight),
+    ]
+    weight_sum = full_weight + sum(state_weights)
+    if weight_sum <= 0:
+      raise ValueError(
+        'Objective-matched multi-state loss weights must sum positive')
+    total_loss = (
+      full_weight * full_loss.loss
+      + sum(weight * loss.loss for weight, loss in zip(
+        state_weights, state_losses))) / weight_sum
+
+    diagnostics = {
+      'loss_full': full_loss.loss.detach(),
+      'loss_t0': state_losses[0].loss.detach(),
+      'loss_t1': state_losses[1].loss.detach(),
+      'loss_t2': state_losses[2].loss.detach(),
+      'loss_t3': state_losses[3].loss.detach(),
+      'mask_ratio_t0': trajectory['ratios'][:, 0].mean(),
+      'mask_ratio_t1': trajectory['ratios'][:, 1].mean(),
+      'mask_ratio_t2': trajectory['ratios'][:, 2].mean(),
+      'mask_ratio_t3': trajectory['ratios'][:, 3].mean(),
+      'step_size': trajectory['step_size'].mean(),
+      'revealed_tokens': (
+        trajectory['mask_counts'][:, :-1]
+        - trajectory['mask_counts'][:, 1:]).float().mean(),
+      'remaining_masks': trajectory['mask_counts'][:, 3].float().mean(),
+      'loss_weight_sum': torch.tensor(weight_sum, device=x0.device),
+      'num_forwards': torch.tensor(5.0, device=x0.device),
+      'loss_base': total_loss.detach(),
+    }
+    # Match DCache reporting: t2 has the largest local-state loss weight.
+    return total_loss, state_losses[2], diagnostics
     
   def on_train_epoch_start(self):
     self.backbone.train()
@@ -893,9 +1538,25 @@ class Diffusion(L.LightningModule):
   def training_step(self, batch, batch_idx):
     del batch_idx
     pretrain_config = getattr(self.config.step_memory, 'pretrain', {})
-    if bool(getattr(pretrain_config, 'enabled', False)):
-      total_loss, reference_loss, diagnostics = self._step_memory_pretrain_loss(
-        batch['input_ids'], batch['attention_mask'])
+    objective_matched_config = getattr(
+      self.config.training, 'objective_matched_multistate', {})
+    dcache_pretrain = bool(getattr(pretrain_config, 'enabled', False))
+    objective_matched = bool(getattr(
+      objective_matched_config, 'enabled', False))
+    if dcache_pretrain or objective_matched:
+      if dcache_pretrain:
+        if bool(getattr(self.config.dcachehooping, 'enabled', False)):
+          total_loss, reference_loss, diagnostics = \
+            self._dcachehooping_pretrain_loss(
+              batch['input_ids'], batch['attention_mask'])
+        else:
+          total_loss, reference_loss, diagnostics = \
+            self._step_memory_pretrain_loss(
+              batch['input_ids'], batch['attention_mask'])
+      else:
+        total_loss, reference_loss, diagnostics = \
+          self._objective_matched_multistate_loss(
+            batch['input_ids'], batch['attention_mask'])
       self.metrics.train_nlls.update(
         reference_loss.nlls, reference_loss.token_mask)
       for name, value in diagnostics.items():
@@ -1002,12 +1663,22 @@ class Diffusion(L.LightningModule):
         torch.cuda.manual_seed(validation_seed)
       if bool(getattr(self.config.step_memory.pretrain, 'enabled', False)):
         return self._step_memory_validation_step(batch)
+      objective_matched_config = getattr(
+        self.config.training, 'objective_matched_multistate', {})
+      if bool(getattr(objective_matched_config, 'enabled', False)):
+        return self._objective_matched_validation_step(batch)
       return self._standard_validation_step(batch)
 
   def _step_memory_validation_step(self, batch):
     """Validate the twice-warmed t2 state and all trajectory components."""
-    total_loss, reference_loss, diagnostics = self._step_memory_pretrain_loss(
-      batch['input_ids'], batch['attention_mask'])
+    if bool(getattr(self.config.dcachehooping, 'enabled', False)):
+      total_loss, reference_loss, diagnostics = \
+        self._dcachehooping_pretrain_loss(
+          batch['input_ids'], batch['attention_mask'])
+    else:
+      total_loss, reference_loss, diagnostics = \
+        self._step_memory_pretrain_loss(
+          batch['input_ids'], batch['attention_mask'])
     token_mask = reference_loss.token_mask.clone()
     if self.ignore_bos:
       token_mask[:, 0] = 0
@@ -1041,6 +1712,59 @@ class Diffusion(L.LightningModule):
         batch_size=batch_size)
     self.log('val/gate_mean', diagnostics['gate_mean'], on_step=False,
              on_epoch=True, sync_dist=True, batch_size=batch_size)
+    for name in [
+        'loss_base', 'latent_mask_loss', 'tentative_loss',
+        'confidence_loss', 'tentative_count', 'tentative_wrong_count',
+        'tentative_before_accuracy', 'tentative_after_accuracy',
+        'tentative_wrong_fix_rate', 'tentative_correct_keep_rate',
+        'confidence_brier', 'confidence_correct_mean',
+        'confidence_wrong_mean']:
+      if name in diagnostics:
+        self.log(
+          f'val/{name}', diagnostics[name], on_step=False, on_epoch=True,
+          sync_dist=True, batch_size=batch_size)
+    return total_loss
+
+  def _objective_matched_validation_step(self, batch):
+    """Validate B on the same deterministic local trajectory as DCache."""
+    total_loss, reference_loss, diagnostics = \
+      self._objective_matched_multistate_loss(
+        batch['input_ids'], batch['attention_mask'])
+    token_mask = reference_loss.token_mask.clone()
+    if self.ignore_bos:
+      token_mask[:, 0] = 0
+    comparable_t2_loss = (
+      reference_loss.nlls * token_mask).sum() / token_mask.sum().clamp_min(1)
+    self.metrics.valid_nlls.update(reference_loss.nlls, token_mask)
+    batch_size = batch['input_ids'].shape[0]
+    self.log('val/loss_s', comparable_t2_loss, on_step=False, on_epoch=True,
+             sync_dist=True, batch_size=batch_size)
+    self.log('val/loss_t2', comparable_t2_loss, on_step=False, on_epoch=True,
+             sync_dist=True, batch_size=batch_size)
+    self.log('val/loss_total', total_loss, on_step=False, on_epoch=True,
+             sync_dist=True, batch_size=batch_size)
+    self.log('val/loss_full', diagnostics['loss_full'], on_step=False,
+             on_epoch=True, sync_dist=True, batch_size=batch_size)
+    self.log('val/loss_t0', diagnostics['loss_t0'], on_step=False,
+             on_epoch=True, sync_dist=True, batch_size=batch_size)
+    self.log('val/loss_t1', diagnostics['loss_t1'], on_step=False,
+             on_epoch=True, sync_dist=True, batch_size=batch_size)
+    self.log('val/loss_t3', diagnostics['loss_t3'], on_step=False,
+             on_epoch=True, sync_dist=True, batch_size=batch_size)
+    self.log('val/loss_t', diagnostics['loss_t3'], on_step=False,
+             on_epoch=True, sync_dist=True, batch_size=batch_size)
+    for state_index in range(4):
+      self.log(
+        f'val/mask_ratio_t{state_index}',
+        diagnostics[f'mask_ratio_t{state_index}'],
+        on_step=False, on_epoch=True, sync_dist=True,
+        batch_size=batch_size)
+    self.log('val/num_forwards', diagnostics['num_forwards'],
+             on_step=False, on_epoch=True, sync_dist=True,
+             batch_size=batch_size)
+    self.log('val/loss_weight_sum', diagnostics['loss_weight_sum'],
+             on_step=False, on_epoch=True, sync_dist=True,
+             batch_size=batch_size)
     return total_loss
 
   def _standard_validation_step(self, batch):
@@ -1189,7 +1913,15 @@ class Diffusion(L.LightningModule):
 
   @torch.no_grad()
   def _ddpm_caching_update(self, x, t, dt, p_x0=None,
-                           previous_step_kv=None):
+                           previous_step_kv=None,
+                           previous_final_hidden=None):
+    """Apply one denoising update and advance recurrent model state.
+
+    ``p_x0`` is reused when the sampled state did not change.  In that case
+    there is deliberately no model forward, so neither recurrent source may
+    advance: both returned memories remain the inputs from the last real
+    forward.
+    """
     _, move_chance_t = self.noise(t)
     _, move_chance_s = self.noise(t - dt)
     sigma_t = self._sigma_from_p(move_chance_t)
@@ -1198,13 +1930,35 @@ class Diffusion(L.LightningModule):
     mask_prob = move_chance_s / move_chance_t
 
     next_step_kv = previous_step_kv
+    next_final_hidden = previous_final_hidden
     if p_x0 is None:
       use_step_memory = self.config.step_memory.enabled
       use_previous_kv = bool(getattr(
         self.config.step_memory, 'use_previous_kv', True))
-      if self.config.sampling.kv_cache:
+      use_final_state = bool(getattr(
+        getattr(self.config, 'dcachehooping', {}), 'enabled', False))
+      forward_x = (
+        x[:, -self.block_size:]
+        if self.config.sampling.kv_cache else x)
+      if use_final_state:
         model_output = self.forward(
-          x[:, -self.block_size:], sigma_t, sample_mode=True,
+          forward_x,
+          sigma_t,
+          sample_mode=True,
+          previous_step_kv=(
+            previous_step_kv
+            if use_step_memory and use_previous_kv else None),
+          return_step_kv=use_step_memory,
+          previous_final_hidden=previous_final_hidden,
+          return_dcachehooping=True)
+        p_x0 = model_output.scores
+        next_step_kv = model_output.step_kv
+        # Sampling runs under no_grad, but detaching here documents and
+        # enforces the same recurrent boundary used during pretraining.
+        next_final_hidden = model_output.final_hidden.detach()
+      elif self.config.sampling.kv_cache:
+        model_output = self.forward(
+          forward_x, sigma_t, sample_mode=True,
           previous_step_kv=(
             previous_step_kv
             if use_step_memory and use_previous_kv else None),
@@ -1216,10 +1970,11 @@ class Diffusion(L.LightningModule):
             previous_step_kv
             if use_step_memory and use_previous_kv else None),
           return_step_kv=use_step_memory)
-      if use_step_memory:
-        p_x0, next_step_kv = model_output
-      else:
-        p_x0 = model_output
+      if not use_final_state:
+        if use_step_memory:
+          p_x0, next_step_kv = model_output
+        else:
+          p_x0 = model_output
       p_x0 = p_x0.to(torch.float64)
       if not self.config.sampling.kv_cache:
         p_x0 = p_x0[:, -self.block_size:]
@@ -1229,10 +1984,16 @@ class Diffusion(L.LightningModule):
     if self.config.sampling.first_hitting:
       x_block = _sample_categorical(p_x0)
       # randomly and uniformly select an index in the block (among masked tokens)
-      num_masked = (x[:, -self.block_size:] == self.mask_index).sum(-1)
-      ind = torch.randint(0, num_masked, (x_block.shape[0],))
-      ind = (x[:, -self.block_size:] == self.mask_index).nonzero()[ind, 1]
-      mask = (torch.arange(self.block_size, device=x.device) == ind[:, None]).to(x_block.dtype)
+      masked = x[:, -self.block_size:] == self.mask_index
+      num_masked = masked.sum(-1)
+      if torch.any(num_masked == 0):
+        raise RuntimeError(
+          'First-hitting update requires at least one mask in every sample')
+      random_rank = torch.floor(
+        torch.rand(x_block.shape[0], device=x.device) * num_masked).long()
+      rank_at_position = masked.long().cumsum(-1) - 1
+      mask = (
+        masked & rank_at_position.eq(random_rank[:, None])).to(x_block.dtype)
       x_block = x_block * mask + x[:, -self.block_size:] * (1 - mask)
     else:
       q_xs = p_x0 * (1 - mask_prob)
@@ -1247,9 +2008,9 @@ class Diffusion(L.LightningModule):
       _ = self.forward(x_block, sigma_t, sample_mode=True, store_kv=True)
 
     if not torch.allclose(x_new, x):
-      return None, x_new, next_step_kv
+      return None, x_new, next_step_kv, next_final_hidden
     else:
-      return p_x0, x_new, next_step_kv
+      return p_x0, x_new, next_step_kv, next_final_hidden
 
   @torch.no_grad()
   def _ar_sampler(self, bsz, context_len=1024):
@@ -1648,6 +2409,7 @@ class Diffusion(L.LightningModule):
       # Step memory is local to one active block. Completed-block cache has a
       # separate lifetime and is intentionally not reset here.
       previous_step_kv = None
+      previous_final_hidden = None
       # sample next block
       if stride_num == 0:
         x_accum = self._sample_prior(n_samples, self.block_size).to(self.device)
@@ -1683,12 +2445,16 @@ class Diffusion(L.LightningModule):
         elif not self.config.sampling.first_hitting:
           t = timesteps[i]
 
-        p_x0_cache, x_next, previous_step_kv = self._ddpm_caching_update(
+        (p_x0_cache,
+         x_next,
+         previous_step_kv,
+         previous_final_hidden) = self._ddpm_caching_update(
             x=x_accum[:, fwd_idx],
             t=t * ones,
             dt=dt,
             p_x0=p_x0_cache,
-            previous_step_kv=previous_step_kv)
+            previous_step_kv=previous_step_kv,
+            previous_final_hidden=previous_final_hidden)
         if p_x0_cache is None:
           sampling_steps += 1
        

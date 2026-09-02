@@ -85,6 +85,36 @@ step_memory:
     teacher_token_probability: 0.85
     nucleus_p: 0.9
 
+# Opt-in DCache-v2 extension that also propagates the detached final-layer
+# representation, marks model proposals as tentative, and learns an explicit
+# token-reliability score. Disabled configurations retain the exact v2 graph.
+dcachehooping:
+  enabled: False
+  # Required only for tentative-token or latent-mask training. Disable it for
+  # the minimal DCache + final-state self-conditioning architecture.
+  status_embedding:
+    enabled: True
+  # Sample tentative correction and latent-mask robustness from one
+  # categorical route. Their marginal rates stay 25% and 10%, but the two
+  # extra trainable transformer graphs are never retained simultaneously.
+  exclusive_auxiliary_routes: True
+  # Drop the propagated final hidden while retaining ordinary current input
+  # and DCache. This is independent of DCache query-source dropout.
+  latent_dropout_probability: 0.10
+  # Auxiliary same-state pass: replace lexical input with MASK, keep logical
+  # status and the correct detached final hidden, and omit previous DCache.
+  latent_mask_probability: 0.10
+  latent_mask_loss_weight: 0.10
+  tentative:
+    enabled: True
+    batch_probability: 0.25
+    loss_weight: 0.10
+  confidence:
+    enabled: True
+    loss_weight: 0.30
+  # On an identity batch, choose which recurrent source to contaminate.
+  identity_final_probability: 0.50
+
 training:
   ema: 0.9999
   antithetic_sampling: True
@@ -95,10 +125,20 @@ training:
   sampling_eps_max: 1.0
   from_pretrained: null
   eval_nll: True # always evaluate nll if block size is 1
+  # Parameter-identical vanilla control for the DCache-v2 pretraining
+  # objective. It uses the exact five-state sampler and normalized token-loss
+  # weights under step_memory.pretrain, but every state is forwarded
+  # independently through a backbone with step_memory.enabled=false.
+  objective_matched_multistate:
+    enabled: False
 
 eval:
   checkpoint_path: ${cwd:}/checkpoints/last.ckpt  # Used to evaluate a checkpoint after training.
   disable_ema: False
+  # Standalone PPL evaluation historically shuffled validation examples.
+  # Disable this when reproducing the fixed, unshuffled validation subset
+  # used inside the training loop.
+  shuffle_valid: True
   perplexity_batch_size: 8
   compute_perplexity_on_sanity: False
   gen_ppl_eval_model_name_or_path: gpt2-large  # gpt2-large, meta-llama/Llama-2-7b-hf

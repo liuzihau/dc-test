@@ -1,9 +1,170 @@
 # Dcache environment and experiment runbook
 
+## Canonical one-command interface
+
+Use one of `vanilla`, `objective`, `dcache-v2`, or `final-state`, and always
+give a distinct output directory:
+
+```bash
+source /home/tliu0205/miniconda3/etc/profile.d/conda.sh
+conda activate dcache
+cd /share2/home/tliu0205/dc-test
+
+bash scripts/train/run_canonical_trial.sh \
+  final-state outputs/my-final-state-trial
+```
+
+The default is physical GPUs 2 and 3, two logical devices, global batch 512,
+validation every 500 optimizer steps, and the latest three periodic
+checkpoints. `last.ckpt` is a symlink to the newest retained file. Override
+hardware through `DCACHE_CUDA_VISIBLE_DEVICES` and `DCACHE_DEVICES`; run the
+same command with `DCACHE_PREFLIGHT_ONLY=1` for a non-training check.
+
+Run aligned, unshuffled training-objective validation with:
+
+```bash
+bash scripts/eval/eval_checkpoint_validation.sh \
+  final-state \
+  outputs/my-final-state-trial/checkpoints/last.ckpt \
+  outputs/my-final-state-trial-validation
+```
+
+For the dual-memory causal intervention, use:
+
+```bash
+bash scripts/eval/eval_final_state_interventions.sh \
+  outputs/my-final-state-trial/checkpoints/last.ckpt \
+  outputs/my-final-state-trial-memory-interventions
+```
+
+That evaluation scores the identical teacher-forced state under five source
+conditions: correct/correct, shuffled-DCache/correct-final,
+correct-DCache/shuffled-final, shuffled/shuffled, and absent/absent.
+
 > **2026-08-12 DCache-v2 update:** For the current five-forward trajectory,
 > source dropout, cache-identity loss, residual gate, tested VRAM, and exact
 > launch/evaluation commands, read `DCACHE_V2_IMPLEMENTATION_WORK_NOTE.md`.
 > Older three-forward sections below are retained as v1 experiment history.
+
+## Continue the completed V2 and vanilla runs from 5k to 6k
+
+The 2026-08-18 continuation uses all four RTX 3090 GPUs, keeps global batch
+size 512, runs DCache-v2 first, and then runs the vanilla baseline. Each model
+receives exactly 1000 additional optimizer updates. Activate `dcache` and run:
+
+```bash
+cd /share2/home/tliu0205/dc-test
+source /home/tliu0205/miniconda3/etc/profile.d/conda.sh
+conda activate dcache
+bash scripts/train/run_owt_dcache_then_baseline_5k_to_6k_4x3090.sh
+```
+
+For a connection-independent run, execute the final command inside `tmux`.
+The stages can also be run separately:
+
+```bash
+bash scripts/train/continue_owt_5k_to_6k_4x3090.sh dcache
+bash scripts/train/continue_owt_5k_to_6k_4x3090.sh baseline
+```
+
+The continuation sets `trainer.max_steps=6000`, not 1000, because Lightning
+restores `global_step=5000` from each checkpoint. DCache uses microbatch 2 and
+accumulation 64; vanilla uses microbatch 4 and accumulation 32. Both retain
+global batch 512 and validate every 500 new optimizer updates.
+
+Before resuming, the launcher renames the existing `last.ckpt` to
+`0-5000.ckpt`, avoiding another multi-gigabyte copy. It then enables numbered
+checkpoints every 500 steps. Lightning's global checkpoint step is one greater
+than the zero-based metric index:
+
+```text
+metric step 4999 -> checkpoints/0-5000.ckpt
+metric step 5499 -> checkpoints/0-5500.ckpt
+metric step 5999 -> checkpoints/0-6000.ckpt
+```
+
+The script verifies `global_step` inside every checkpoint before and after
+training. A non-mutating four-GPU/data/checkpoint preflight is available with:
+
+```bash
+DCACHE_PREFLIGHT_ONLY=1 \
+  bash scripts/train/continue_owt_5k_to_6k_4x3090.sh dcache
+DCACHE_PREFLIGHT_ONLY=1 \
+  bash scripts/train/continue_owt_5k_to_6k_4x3090.sh baseline
+```
+
+## Objective-matched vanilla control B: 5,000 steps
+
+Control B is parameter-identical to vanilla MDLM/BD3 pretraining, but replaces
+the single randomly corrupted state with the exact DCache-v2 five-state
+teacher-forced objective. The backbone has no DCache modules and every state
+is forwarded independently; no cache is written or consumed.
+
+For center `x` and local step `k`:
+
+```text
+k ~ Uniform(0.025, 0.10)
+x ~ Uniform(1.5k, 0.9975 - 1.5k)
+full = 1.0
+t0 = x + 1.5k
+t1 = x + 0.5k
+t2 = x - 0.5k
+t3 = x - 1.5k
+```
+
+The loss is a normalized weighted average, not a 2.05-times multiplier:
+
+```text
+(0.05 L_full + 0.10 L_t0 + 0.20 L_t1 + 1.00 L_t2 + 0.70 L_t3) / 2.05
+```
+
+On all four visible GPUs:
+
+```bash
+source /home/tliu0205/miniconda3/etc/profile.d/conda.sh
+conda activate dcache
+DCACHE_CUDA_VISIBLE_DEVICES=0,1,2,3 \
+DCACHE_DEVICES=4 \
+  bash scripts/train/train_owt_mdlm_objective_matched_5k.sh
+```
+
+On physical GPUs 2 and 3 only:
+
+```bash
+DCACHE_CUDA_VISIBLE_DEVICES=2,3 \
+DCACHE_DEVICES=2 \
+  bash scripts/train/train_owt_mdlm_objective_matched_5k.sh
+```
+
+The safe default is microbatch 2, global batch 512, and eight dataloader
+workers per DDP rank. Set `DCACHE_MICRO_BATCH=1` if a 24-GB device cannot retain
+five vanilla forward graphs; set `DCACHE_NUM_WORKERS` only to tune input
+throughput. The launcher validates GPU count and prepared datasets, uses seed
+1, validates on 100 batches every 500 optimizer updates, and refuses to resume
+a checkpoint that was not created in objective-matched mode. Its stable output
+directory is:
+
+```text
+outputs/owt-mdlm-objective-matched-5k/
+```
+
+Run a non-training preflight with the same environment variables plus:
+
+```bash
+DCACHE_PREFLIGHT_ONLY=1
+```
+
+Key CSV fields are `trainer/loss`, `trainer/loss_full`, `trainer/loss_t0`
+through `trainer/loss_t3`, `trainer/num_forwards=5`, and
+`trainer/loss_weight_sum=2.05`; validation has the corresponding `val/*`
+fields. `val/loss_t2` is the primary trajectory-state curve shared with D.
+
+Training uses the same sampler implementation, distribution, OpenWebText
+data, seed, optimizer, learning-rate schedule, global batch, and update count
+as D. Because A/B and D construct different architectures, their training RNG
+streams are not guaranteed to select the exact same masks per document.
+Validation masks are exactly reproducible because validation forks and seeds
+its RNG independently by batch and rank.
 
 ## Environment
 
@@ -40,12 +201,14 @@ conda activate dcache
 python -m pytest -q \
   tests/test_step_memory.py \
   tests/test_rollout_curriculum.py \
-  tests/test_dcache_pretrain.py
+  tests/test_dcache_pretrain.py \
+  tests/test_objective_matched_pretrain.py
 ```
 
 These cover DCache-before-normal ordering, `[M2...M13]` cache mapping, 2D RoPE,
 the final writer gradient under truncated recurrence, nested `s -> t` masks,
-and the complete three-pass loss.
+the complete five-forward loss, and the parameter-identical/cache-free B
+control.
 
 ## 100k MDLM pretraining comparison
 
@@ -414,3 +577,22 @@ unused denoising modules, which keeps the vanilla control faithful and avoids
 unused-parameter failures under DDP.
 Always report parameter count, real forward count, wall time, and peak VRAM;
 add a matched-compute comparison before making a strong quality claim.
+
+## Dcachehooping trial
+
+Dcachehooping preserves the DCache-v2 five-state base objective and adds a
+detached final-layer recurrent state, explicit tentative tokens, direct token
+correction, and confidence supervision. Its exact routes, losses, metrics,
+checkpoint migration behavior, and ablations are recorded in
+`DCACHEHOOPING_IMPLEMENTATION.md`.
+
+Run the 5k trial on physical GPUs 2 and 3:
+
+```bash
+conda activate dcache
+bash scripts/train/train_owt_dcachehooping_5k_2x3090.sh
+```
+
+Use `trainer/loss_base` and `val/loss_t2` for curves comparable with DCache-v2.
+`trainer/loss` and `val/loss_total` include auxiliary losses and therefore are
+not directly comparable to the older total objective.

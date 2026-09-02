@@ -1,5 +1,76 @@
 # Recurrent Denoising QKV Memory for BD3-LM
 
+> **2026-09-02 implementation consolidation:** The four canonical training
+> variants now share `scripts/train/run_canonical_trial.sh`; aligned validation
+> uses `scripts/eval/eval_checkpoint_validation.sh`. DCache + final-state
+> recurrence is now propagated by the real sampler, not only by training and
+> validation. `scripts/eval/eval_final_state_interventions.py` independently
+> tests correct/shuffled/absent DCache and final-state sources. New training
+> runs retain the latest three 500-step checkpoints and make `last.ckpt` a
+> symlink. The older snapshot below remains design history.
+>
+> **2026-08-25 canonical project layout:** Current analysis recognizes four
+> experiments only: BD3/MDLM vanilla, the objective-aligned no-memory control,
+> DCache-v2, and DCache plus detached final-state reuse. Their paths, metrics,
+> and status are defined in `experiments/canonical_runs.json`. Run
+> `python scripts/results/refresh_canonical_results.py` to regenerate the
+> curated figures and tables under `results/generated/`. Failed runs, smoke
+> tests, DCache-v1, and superseded plots are recoverably stored under
+> `archive/legacy_outputs_2026-08-25/` and must not be used for claims.
+>
+> The active DCache + final-state trial intentionally disables tentative-token
+> correction, token-status embeddings, confidence supervision, and the
+> latent-mask auxiliary pass. It is a clean dual-memory test aligned with the
+> DCache-v2 five-state objective. See `DCACHEHOOPING_IMPLEMENTATION.md` and
+> `results/README.md`.
+>
+> **2026-08-24 Dcachehooping implementation:** An opt-in DCache-v2 extension
+> now propagates the detached final-layer representation, adds zero-initialized
+> mask/committed/tentative status embeddings, trains direct tentative-token
+> correction with an unclamped editable head, and learns RemeDi-style token
+> confidence. DCache-v2 remains available unchanged when the feature is off.
+> The exact objective, source contamination, compatibility guarantees,
+> metrics, tests, and the GPU-2/3 launcher are in
+> `DCACHEHOOPING_IMPLEMENTATION.md`.
+>
+> **2026-08-18 current research status:** Start with
+> `DCACHE_RESEARCH_SUMMARY.md`. It contains the current research question,
+> architecture, V1 and V2 controlled results, experiment criteria,
+> and task list. For exact V2 equations and launch details, then read
+> `DCACHE_V2_IMPLEMENTATION_WORK_NOTE.md`. The older prototype discussion below
+> is retained as design history and is not authoritative where it conflicts
+> with those two files.
+>
+> **Completed run:** DCache-v2 finished 5000 optimizer steps on OpenWebText
+> using two RTX 3090 GPUs, length 1024, and global batch size 512. Final
+> cache-warmed `t2` validation was `NLL=3.6067`, `PPL=36.84`, and mean gate
+> `0.1885`. The vanilla final validation was `NLL=3.9329`, but these training
+> validation distributions are not exactly matched.
+>
+> **Most important result so far:** DCache-v1 strongly preferred a present
+> cache over no cache, yet a batch-shuffled cache was only about
+> `0.0009--0.0017` NLL worse than the correct cache. The model learned cache
+> dependence without meaningful document-specific cache identity. V2 directly
+> targets this failure using nearby exact nested states, source dropout, an
+> explicit correct-versus-shuffled identity loss, and learned residual gates.
+>
+> **2026-08-19 objective-matched control B:** The repository now has a
+> parameter-identical vanilla MDLM control that uses DCache-v2's exact
+> five-state nested-mask sampler and normalized token-loss weights, while
+> disabling the DCache architecture and every cache treatment. Its objective
+> is `(0.05 L_full + 0.10 L_t0 + 0.20 L_t1 + 1.00 L_t2 + 0.70 L_t3) / 2.05`.
+> Run `scripts/train/train_owt_mdlm_objective_matched_5k.sh`; exact invariants,
+> GPU commands, metrics, and resume behavior are in `DCACHE_RUNBOOK.md`.
+> Targeted tests are in `tests/test_objective_matched_pretrain.py`.
+>
+> **Controlled result:** On the same 800 documents and exact token masks, V2
+> correct cache beats vanilla across all six tested transitions by
+> `0.1097--0.2055` NLL. Correct cache beats shuffled cache by
+> `0.0216--0.0555` NLL, with every paired 95% confidence interval above zero.
+> V2 therefore passes the short-run cache-identity and matched-quality gates.
+> The next requirements are on-policy generation, source-only/per-layer
+> ablations, and compute-normalized evaluation before a large run.
+>
 > **2026-08-10 shifted-pretraining update:** Read
 > `FINAL_DENOISING_CACHE_PLAN.md` first. It now supersedes the same-layer
 > architecture below. The implemented proposal runs DCache attention before
@@ -17,7 +88,7 @@
 > The `dcache` environment, end-to-end CUDA smoke test, full-size VRAM profile,
 > and launch/evaluation commands are recorded in `DCACHE_RUNBOOK.md`.
 
-## Server handoff and current project state
+## Historical server handoff and former project state
 
 **Snapshot date:** 2026-08-08  
 **Research repository:** `ar-dcache/bd3lms`  
@@ -25,7 +96,8 @@
 **Upstream revision used:** `1c3e8f43d88dfbcee5ff2aa6932a9e74b31ae1d7`  
 **Detailed original research plan:** `bd3_denoising_kv_research_plan.md`
 
-This document is the first file a new server-side agent should read. It records the research idea, the decisions made after inspecting BD3 and LLaDA 2.0, the implementation already completed, the differences between the intended final model and the present smoke-test model, hardware expectations, and the next safe tasks.
+This section records the 2026-08-08 state and is retained for design history.
+For the current project state, read `DCACHE_RESEARCH_SUMMARY.md` first.
 
 ---
 
@@ -58,7 +130,8 @@ Do now:
 1. Preserve vanilla BD3 architecture and base loss.
 2. Add previous-denoising active-block attention memory.
 3. Establish exact zero-gate compatibility.
-4. Make inference recurrence work.
+4. Make inference recurrence work. **Completed for both DCache and the
+   detached previous final state on 2026-09-02.**
 5. Add a small differentiable rollout objective.
 6. Profile memory and speed before scaling the rollout horizon.
 

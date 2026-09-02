@@ -1,5 +1,6 @@
 import math
 import typing
+from dataclasses import dataclass
 
 import einops
 from einops import rearrange
@@ -253,6 +254,15 @@ class LayerNorm(nn.Module):
     with torch.amp.autocast('cuda', enabled=False):
       x = F.layer_norm(x.float(), [self.dim])
     return x * self.weight[None, None, :]
+
+
+@dataclass
+class DcachehoopingBackboneOutput:
+  """Optional rich output used by recurrent workspace pretraining."""
+  logits: torch.Tensor
+  step_kv: typing.Optional[typing.List[torch.Tensor]]
+  final_hidden: torch.Tensor
+  confidence_logits: typing.Optional[torch.Tensor]
 
 
 def residual_linear(x, W, x_skip, residual_scale):
@@ -956,6 +966,30 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     gate_config = getattr(step_memory_config, 'gate', {})
     step_memory_gate_enabled = bool(getattr(gate_config, 'enabled', False))
     step_memory_gate_init = float(getattr(gate_config, 'init', 0.1))
+    dcachehooping_config = getattr(config, 'dcachehooping', {})
+    self.dcachehooping_enabled = bool(getattr(
+      dcachehooping_config, 'enabled', False))
+    status_config = getattr(dcachehooping_config, 'status_embedding', {})
+    confidence_config = getattr(dcachehooping_config, 'confidence', {})
+    self.dcachehooping_status_enabled = bool(getattr(
+      status_config, 'enabled', True))
+    self.dcachehooping_confidence_enabled = bool(getattr(
+      confidence_config, 'enabled', True))
+    self.dcachehooping_latent_norm = None
+    self.dcachehooping_status_embed = None
+    self.dcachehooping_confidence_head = None
+    if self.dcachehooping_enabled:
+      # A zero scale makes an adapted DCache-v2 checkpoint logit-identical
+      # before the new recurrent latent path has learned to contribute.
+      self.dcachehooping_latent_norm = LayerNorm(dim)
+      self.dcachehooping_latent_norm.weight.data.zero_()
+      if self.dcachehooping_status_enabled:
+        self.dcachehooping_status_embed = nn.Embedding(3, dim)
+        self.dcachehooping_status_embed.weight.data.zero_()
+      if self.dcachehooping_confidence_enabled:
+        self.dcachehooping_confidence_head = nn.Linear(dim, 1)
+        self.dcachehooping_confidence_head.weight.data.zero_()
+        self.dcachehooping_confidence_head.bias.data.zero_()
 
     blocks = []
     for _ in range(config.model.n_blocks):
@@ -1036,8 +1070,41 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
   def forward(self, indices, sigma, sample_mode=False, store_kv=False,
               previous_step_kv=None, return_step_kv=False,
               detach_cache_backbone=False,
-              step_memory_source_mask=None):
+              step_memory_source_mask=None,
+              previous_final_hidden=None, token_status=None,
+              return_dcachehooping=False,
+              return_confidence_logits=False):
     x = self.vocab_embed(indices)
+    if previous_final_hidden is not None:
+      if not self.dcachehooping_enabled:
+        raise ValueError(
+          'Previous final hidden requires dcachehooping.enabled=true')
+      if previous_final_hidden.shape != x.shape:
+        raise ValueError(
+          'Previous final hidden must match token embedding shape')
+      x = x + self.dcachehooping_latent_norm(previous_final_hidden)
+    if token_status is not None:
+      if not self.dcachehooping_enabled:
+        raise ValueError('Token status requires dcachehooping.enabled=true')
+      if self.dcachehooping_status_embed is None:
+        raise ValueError(
+          'Token status requires dcachehooping.status_embedding.enabled=true')
+      if token_status.shape != indices.shape:
+        raise ValueError('Token status must match input token shape')
+      if ((token_status < 0) | (token_status > 2)).any():
+        raise ValueError(
+          'Token status values must be mask=0, committed=1, tentative=2')
+      x = x + self.dcachehooping_status_embed(token_status.long())
+    if return_dcachehooping and not self.dcachehooping_enabled:
+      raise ValueError(
+        'Rich workspace output requires dcachehooping.enabled=true')
+    if return_confidence_logits:
+      if not return_dcachehooping:
+        raise ValueError(
+          'Confidence output requires return_dcachehooping=true')
+      if self.dcachehooping_confidence_head is None:
+        raise ValueError(
+          'Confidence output requires dcachehooping.confidence.enabled=true')
     if sigma is None:
       t_cond = None
     else:
@@ -1125,9 +1192,23 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
           detach_backbone=detach_cache_backbone))
         if len(next_step_kv) != len(self.blocks):
           raise RuntimeError('Shifted denoising cache mapping is incomplete')
-      x = self.output_layer(x, t_cond)
+      final_hidden = x
+      confidence_logits = None
+      if return_confidence_logits:
+        confidence_logits = self.dcachehooping_confidence_head(
+          final_hidden).squeeze(-1)
+      x = self.output_layer(final_hidden, t_cond)
     if cross_attn and not sample_mode:
       x = x[:, :self.n]
+      final_hidden = final_hidden[:, :self.n]
+      if confidence_logits is not None:
+        confidence_logits = confidence_logits[:, :self.n]
+    if return_dcachehooping:
+      return DcachehoopingBackboneOutput(
+        logits=x,
+        step_kv=next_step_kv,
+        final_hidden=final_hidden,
+        confidence_logits=confidence_logits)
     if return_step_kv:
       return x, next_step_kv
     return x

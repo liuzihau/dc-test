@@ -1,8 +1,14 @@
 checkpoint_every_n_steps:
   _target_: lightning.pytorch.callbacks.ModelCheckpoint
-  save_top_k: -1 # Do not save any "best" models; this callback is being used to save every n train steps
-  save_last: True # save model as ${save_dir}/checkpoints/last.ckpt
+  # Rank checkpoints by the monotonically increasing optimizer step so this
+  # callback retains the newest three periodic files, not the first three.
+  monitor: step
+  mode: max
+  save_top_k: 3
+  # A symlink gives resume semantics without storing a fourth checkpoint.
+  save_last: link
   dirpath: ${checkpointing.save_dir}/checkpoints
+  filename: 0-{step}
   verbose: True
   auto_insert_metric_name: False
   every_n_train_steps: 500

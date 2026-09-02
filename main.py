@@ -136,8 +136,9 @@ def _ppl_eval(config, logger, tokenizer):
     logger=wandb_logger)
   L.seed_everything(seed)
   config.seed = seed
+  valid_seed = seed if config.eval.get('shuffle_valid', True) else None
   _, valid_ds = dataloader.get_dataloaders(
-    config, tokenizer, skip_train=True, valid_seed=seed)
+    config, tokenizer, skip_train=True, valid_seed=valid_seed)
   trainer.validate(model, valid_ds)
 
 def _train(config, logger, tokenizer):

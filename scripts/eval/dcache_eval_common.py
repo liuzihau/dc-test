@@ -49,15 +49,14 @@ def compose_eval_config(
     recurrent: bool,
     num_workers: int = 2,
     gate_enabled: bool = False,
+    final_state_enabled: bool = False,
 ):
   """Compose the exact small/MDLM/1024 configuration used by both runs."""
   register_resolvers()
   recurrent_text = str(recurrent).lower()
   with hydra.initialize_config_dir(
       version_base=None, config_dir=str(REPO_ROOT / 'configs')):
-    return hydra.compose(
-      config_name='config',
-      overrides=[
+    overrides = [
         'algo=mdlm',
         'model=small',
         'model.length=1024',
@@ -84,7 +83,26 @@ def compose_eval_config(
         'step_memory.pretrain.teacher_token_probability=1.0',
         'step_memory.rollout.enabled=false',
         'wandb=null',
+    ]
+    if final_state_enabled:
+      if not recurrent:
+        raise ValueError('Final-state recurrence requires recurrent=true')
+      overrides.extend([
+        'dcachehooping.enabled=true',
+        'dcachehooping.status_embedding.enabled=false',
+        'dcachehooping.latent_dropout_probability=0.10',
+        'dcachehooping.latent_mask_probability=0.0',
+        'dcachehooping.latent_mask_loss_weight=0.0',
+        'dcachehooping.tentative.enabled=false',
+        'dcachehooping.tentative.batch_probability=0.0',
+        'dcachehooping.tentative.loss_weight=0.0',
+        'dcachehooping.confidence.enabled=false',
+        'dcachehooping.confidence.loss_weight=0.0',
+        'dcachehooping.identity_final_probability=0.50',
       ])
+    return hydra.compose(
+      config_name='config',
+      overrides=overrides)
 
 
 def load_validation_data(config, tokenizer, examples: int, batch_size: int,

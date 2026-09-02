@@ -3,6 +3,10 @@
 .hf_cache
 test/
 outputs/
+/archive/
+/results/generated/
+.tmp/
+2503.09573v3.pdf
 wandb/
 watch_folder/
 notes.md
