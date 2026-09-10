@@ -7,6 +7,8 @@ outputs/
 /results/generated/
 .tmp/
 2503.09573v3.pdf
+# Keep the relocated upstream reference with the documentation archive.
+!legacy/upstream/bd3/2503.09573v3.pdf
 wandb/
 watch_folder/
 notes.md
@@ -180,3 +182,8 @@ misc_internal/
 sample_logs/
 varlen_sample_logs/
 logs/
+
+# Cloud transfers/environments are not source artifacts.
+/imports/
+*.ckpt
+*.arrow

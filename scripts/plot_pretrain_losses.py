@@ -289,7 +289,8 @@ def main():
   if dcachehooping is not None:
     dcachehooping_val = plot_validation(
       axes[1], dcachehooping, args.dcachehooping_val_metric,
-      f'{args.dcachehooping_label} validation loss_t2', '#9467bd',
+      (f'{args.dcachehooping_label} validation '
+       f'{args.dcachehooping_val_metric.removeprefix("val/")}'), '#9467bd',
       args.min_step, args.max_step)
   axes[1].set_xlabel('Optimizer step')
   axes[1].set_ylabel('Validation loss / NLL')

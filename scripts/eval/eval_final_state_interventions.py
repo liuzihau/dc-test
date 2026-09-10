@@ -51,6 +51,9 @@ def parse_args():
   parser.add_argument('--device', default='cuda:0')
   parser.add_argument('--force', action='store_true')
   parser.add_argument(
+    '--two-forward', action='store_true',
+    help='Compose the strict two-forward checkpoint architecture.')
+  parser.add_argument(
     '--transitions', type=parse_transition, nargs='+',
     default=DEFAULT_TRANSITIONS, metavar='S:T')
   return parser.parse_args()
@@ -92,7 +95,8 @@ def run(args, loader, tokenizer, output_dir, device):
     recurrent=True,
     num_workers=args.num_workers,
     gate_enabled=True,
-    final_state_enabled=True)
+    final_state_enabled=True,
+    two_forward_enabled=args.two_forward)
   model = common.load_ema_model(args.checkpoint, config, tokenizer, device)
   print(f'Loaded final-state EMA; {len(missing)}/{len(loader)} batches remain.',
         flush=True)
@@ -260,7 +264,8 @@ def main():
     recurrent=True,
     num_workers=args.num_workers,
     gate_enabled=True,
-    final_state_enabled=True)
+    final_state_enabled=True,
+    two_forward_enabled=args.two_forward)
   tokenizer = common.load_tokenizer(config)
   loader = common.load_validation_data(
     config, tokenizer, args.examples, args.batch_size, args.num_workers)

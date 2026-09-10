@@ -90,6 +90,21 @@ step_memory:
 # token-reliability score. Disabled configurations retain the exact v2 graph.
 dcachehooping:
   enabled: False
+  # Five canonical forwards with all overlapping one-transition DCache
+  # backbone gradients. Independent cache-input leaves and explicit local
+  # VJPs prevent any loss from reaching two or more earlier forwards.
+  # Final-state feedback remains detached; legacy modes are unchanged.
+  adjacent_grad:
+    enabled: False
+  # Loopholing-aligned local transition with exactly two backbone forwards.
+  # This is isolated from the legacy five-forward DCachehooping objective.
+  two_forward:
+    enabled: False
+    # Sample k uniformly, then t uniformly from [0, max_first-k] and use
+    # (x_s, x_t) mask ratios (t+k, t). Exact integer masks remain nested.
+    max_first_mask_ratio: 1.0
+    first_loss_weight: 0.80
+    second_loss_weight: 1.25
   # Required only for tentative-token or latent-mask training. Disable it for
   # the minimal DCache + final-state self-conditioning architecture.
   status_embedding:
@@ -190,3 +205,6 @@ checkpointing:
   # Note: `checkpoints` path should correspond to `checkpoint_every_n_steps.dirpath`
   resume_from_ckpt: true
   resume_ckpt_path: ${.save_dir}/checkpoints/last.ckpt
+  # Opt-in DDP migration only: unchanged global batch, full optimizer boundary.
+  # Rewrites loaded loop/sampler counters, never the source checkpoint file.
+  allow_batch_geometry_change: false

@@ -1,0 +1,7 @@
+# Additional constraints matching the environment that produced step 1500.
+# The main direct dependencies remain pinned in requirements.txt.
+numpy==1.26.4
+scipy==1.13.1
+pyarrow==21.0.0
+huggingface-hub==0.36.2
+tokenizers==0.21.4

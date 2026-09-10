@@ -3,7 +3,7 @@ set -euo pipefail
 
 if (( $# < 3 )); then
   echo "Usage: $0 VARIANT CHECKPOINT OUTPUT_DIR [extra Hydra overrides...]" >&2
-  echo "VARIANT: vanilla | objective | dcache-v2 | final-state" >&2
+  echo "VARIANT: vanilla | objective | dcache-v2 | final-state | two-forward | final-state-adjacent" >&2
   exit 2
 fi
 
@@ -54,7 +54,7 @@ case "$VARIANT" in
       step_memory.gate.enabled=true
       step_memory.pretrain.enabled=true)
     ;;
-  final-state)
+  final-state|final-state-adjacent)
     VARIANT_OVERRIDES+=(
       step_memory.enabled=true
       step_memory.use_previous_kv=true
@@ -62,6 +62,34 @@ case "$VARIANT" in
       step_memory.gate.enabled=true
       step_memory.pretrain.enabled=true
       dcachehooping.enabled=true
+      dcachehooping.status_embedding.enabled=false
+      dcachehooping.latent_dropout_probability=0.10
+      dcachehooping.latent_mask_probability=0.0
+      dcachehooping.latent_mask_loss_weight=0.0
+      dcachehooping.tentative.enabled=false
+      dcachehooping.tentative.batch_probability=0.0
+      dcachehooping.tentative.loss_weight=0.0
+      dcachehooping.confidence.enabled=false
+      dcachehooping.confidence.loss_weight=0.0)
+    if [[ "$VARIANT" == "final-state-adjacent" ]]; then
+      # Identical five-state validation inputs/losses; only the checkpoint's
+      # training-gradient mode differs (validation does not backpropagate).
+      VARIANT_OVERRIDES+=(
+        step_memory.detach_between_steps=false
+        dcachehooping.two_forward.enabled=false
+        dcachehooping.adjacent_grad.enabled=true)
+    fi
+    ;;
+  two-forward)
+    VARIANT_OVERRIDES+=(
+      step_memory.enabled=true
+      step_memory.use_previous_kv=true
+      step_memory.detach_between_steps=false
+      step_memory.gate.enabled=true
+      step_memory.pretrain.enabled=true
+      step_memory.pretrain.identity.enabled=false
+      dcachehooping.enabled=true
+      dcachehooping.two_forward.enabled=true
       dcachehooping.status_embedding.enabled=false
       dcachehooping.latent_dropout_probability=0.10
       dcachehooping.latent_mask_probability=0.0

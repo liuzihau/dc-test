@@ -17,7 +17,9 @@ import metrics
 import models
 import noise_schedule
 from rollout_utils import build_rollout_mask_counts
+from recurrent_gradients import AdjacentCacheGradients
 import utils
+from checkpoint_resume import GEOMETRY_KEY, batch_geometry, migrate_batch_geometry
 
 def _sample_categorical(categorical_probs):
   gumbel_norm = (1e-10 - (torch.rand_like(categorical_probs) + 1e-10).log())
@@ -131,16 +133,6 @@ class Diffusion(L.LightningModule):
                   self.noise.parameters()]
     return itertools.chain(* parameters)
 
-  def on_validation_model_zero_grad(self) -> None:
-    '''
-    Small hack to avoid first validation on resume. 
-    This will NOT work if the gradient accumulation step should be performed at this point.
-    '''
-    super().on_validation_model_zero_grad()
-    if self.trainer.ckpt_path is not None and getattr(self, '_restarting_skip_val_flag', True):
-        self.trainer.sanity_checking = True
-        self._restarting_skip_val_flag = False
-
   def _validate_configuration(self):
     if self.config.mode == 'sample_eval' and \
         self.config.sampling.first_hitting:
@@ -164,6 +156,12 @@ class Diffusion(L.LightningModule):
     dcachehooping_config = getattr(self.config, 'dcachehooping', {})
     dcachehooping_enabled = bool(getattr(
       dcachehooping_config, 'enabled', False))
+    two_forward_config = getattr(
+      dcachehooping_config, 'two_forward', {})
+    two_forward_enabled = bool(getattr(
+      two_forward_config, 'enabled', False))
+    adjacent_grad_enabled = bool(getattr(
+      getattr(dcachehooping_config, 'adjacent_grad', {}), 'enabled', False))
     assert not (
       objective_matched_enabled
       and bool(getattr(pretrain_config, 'enabled', False))), (
@@ -174,8 +172,9 @@ class Diffusion(L.LightningModule):
         'Dcachehooping extends DCache-v2 pretraining')
       assert self.config.step_memory.enabled
       assert self.config.step_memory.use_previous_kv
-      assert self.config.step_memory.detach_between_steps, (
-        'Dcachehooping requires detached recurrent sources')
+      if not (two_forward_enabled or adjacent_grad_enabled):
+        assert self.config.step_memory.detach_between_steps, (
+          'Legacy Dcachehooping requires detached recurrent sources')
       assert not objective_matched_enabled
       latent_dropout = float(
         dcachehooping_config.latent_dropout_probability)
@@ -208,6 +207,53 @@ class Diffusion(L.LightningModule):
         'Latent-mask robustness requires the token-status embedding')
       assert 0 <= float(
         dcachehooping_config.identity_final_probability) <= 1
+    if adjacent_grad_enabled:
+      assert dcachehooping_enabled, (
+        'Adjacent gradients require the five-forward dual-memory objective')
+      assert not two_forward_enabled, (
+        'Adjacent five-forward and strict two-forward modes are exclusive')
+      assert not self.config.step_memory.detach_between_steps, (
+        'Adjacent mode writes connected local caches; its explicit gradient '
+        'bridges, not hidden-state detachment, enforce the one-transition limit')
+      assert not bool(rollout_config.enabled)
+      assert not bool(getattr(dcachehooping_config.status_embedding,
+                              'enabled', True))
+      assert float(dcachehooping_config.latent_mask_probability) == 0
+      assert float(dcachehooping_config.latent_mask_loss_weight) == 0
+      assert not bool(dcachehooping_config.tentative.enabled)
+      assert float(dcachehooping_config.tentative.batch_probability) == 0
+      assert float(dcachehooping_config.tentative.loss_weight) == 0
+      assert not bool(dcachehooping_config.confidence.enabled)
+      assert float(dcachehooping_config.confidence.loss_weight) == 0
+      assert str(self.config.trainer.precision) not in {
+        '16', '16-mixed', '16-true', 'fp16'}, (
+          'Adjacent input VJPs currently support BF16/FP32, not FP16 loss scaling')
+    if two_forward_enabled:
+      assert dcachehooping_enabled, (
+        'Two-forward recurrence requires dcachehooping.enabled=true')
+      assert not self.config.step_memory.detach_between_steps, (
+        'Two-forward recurrence keeps the DCache graph connected; only the '
+        'previous final hidden is detached')
+      assert not bool(getattr(
+        dcachehooping_config.status_embedding, 'enabled', True)), (
+          'Strict two-forward mode does not use token-status embeddings')
+      assert float(dcachehooping_config.latent_mask_probability) == 0
+      assert float(dcachehooping_config.latent_mask_loss_weight) == 0
+      assert not bool(dcachehooping_config.tentative.enabled)
+      assert float(dcachehooping_config.tentative.batch_probability) == 0
+      assert float(dcachehooping_config.tentative.loss_weight) == 0
+      assert not bool(dcachehooping_config.confidence.enabled)
+      assert float(dcachehooping_config.confidence.loss_weight) == 0
+      assert not bool(pretrain_config.identity.enabled), (
+        'Shuffled identity supervision needs a third forward and is disabled '
+        'in strict two-forward mode')
+      max_first = float(two_forward_config.max_first_mask_ratio)
+      first_weight = float(two_forward_config.first_loss_weight)
+      second_weight = float(two_forward_config.second_loss_weight)
+      assert 0 < max_first <= 1.0
+      assert float(pretrain_config.step_size_max) < max_first
+      assert first_weight >= 0 and second_weight >= 0
+      assert first_weight + second_weight > 0
     if bool(getattr(pretrain_config, 'enabled', False)):
       assert self.config.step_memory.enabled
       assert self.config.step_memory.use_previous_kv
@@ -320,7 +366,22 @@ class Diffusion(L.LightningModule):
 
   def on_load_checkpoint(self, checkpoint):
     print('Loading checkpoint at', checkpoint['global_step'])
-    self._restarting_skip_val_flag = True
+    # Standalone checkpoint loading/validation may intentionally use a different
+    # batch size. Only Trainer.fit owns a resumable training/sampler cursor.
+    trainer = getattr(self, '_trainer', None)
+    if trainer is not None and trainer.state.fn == 'fit':
+      connector = trainer._accelerator_connector
+      self._batch_geometry_migration = migrate_batch_geometry(
+        checkpoint,
+        batch_geometry(
+          self.config, world_size=trainer.world_size,
+          accumulation=trainer.accumulate_grad_batches,
+          distributed_sampler=(connector.use_distributed_sampler
+                               and connector.is_distributed)),
+        allow_change=bool(self.config.checkpointing.get(
+          'allow_batch_geometry_change', False)))
+      if self._batch_geometry_migration is not None:
+        print('Migrated checkpoint batch geometry:', self._batch_geometry_migration)
 
     # for models compiled with `torch.compile`
     if '_orig_mod.' in list(checkpoint['state_dict'].keys())[0]:
@@ -357,6 +418,13 @@ class Diffusion(L.LightningModule):
         'current']['completed']
 
   def on_save_checkpoint(self, checkpoint):
+    connector = self.trainer._accelerator_connector
+    checkpoint[GEOMETRY_KEY] = batch_geometry(
+      self.config, world_size=self.trainer.world_size,
+      accumulation=self.trainer.accumulate_grad_batches,
+      distributed_sampler=(connector.use_distributed_sampler
+                           and connector.is_distributed),
+      verify_config=False)
     if self.ema:
       checkpoint['ema'] = self.ema.state_dict()
     if hasattr(self, 'sampling_eps_min'):
@@ -411,6 +479,12 @@ class Diffusion(L.LightningModule):
       sampler_cls = dataloader.RandomFaultTolerantSampler
     updated_dls = []
     for dl in self.trainer.fit_loop._combined_loader.flattened:
+      migration = getattr(self, '_batch_geometry_migration', None)
+      if (migration is not None
+          and migration['global_samples_in_epoch'] >= len(dl.dataset)):
+        raise ValueError(
+          'Migrated sampler cursor reaches the dataset boundary; verify the '
+          'same dataset and avoid an end-of-epoch/padded checkpoint')
       if hasattr(dl.sampler, 'shuffle'):
         dl_sampler = sampler_cls(
           dl.dataset, shuffle=dl.sampler.shuffle)
@@ -821,6 +895,67 @@ class Diffusion(L.LightningModule):
       'eligible': eligible,
     }
 
+  def _sample_two_forward_trajectory(self, x0, attention_mask):
+    """Sample one exact nested transition ``x_s -> x_t``.
+
+    ``k`` is uniform on the existing local-step interval. The second-state
+    ratio ``t`` is uniform on ``[0, max_first-k]`` and the first-state ratio is
+    ``s=t+k``. Integer correction permits every eligible position to be masked
+    in ``x_s``, while guaranteeing at least one reveal and at least one mask in
+    ``x_t``.
+    """
+    del x0
+    pretrain_config = self.config.step_memory.pretrain
+    config = self.config.dcachehooping.two_forward
+    eligible = attention_mask.bool().clone()
+    if self.ignore_bos:
+      eligible[:, 0] = False
+    eligible_counts = eligible.sum(dim=-1)
+    if (eligible_counts < 2).any():
+      raise ValueError(
+        'Two-forward trajectories need at least two maskable positions')
+
+    batch_size = attention_mask.shape[0]
+    k_min = float(pretrain_config.step_size_min)
+    k_max = float(pretrain_config.step_size_max)
+    max_first = float(config.max_first_mask_ratio)
+    step_size = k_min + torch.rand(
+      (batch_size, 1), device=attention_mask.device) * (k_max - k_min)
+    sampled_second = torch.rand_like(step_size) * (max_first - step_size)
+    sampled_first = sampled_second + step_size
+    sampled_ratios = torch.cat([sampled_first, sampled_second], dim=-1)
+
+    masks = [torch.zeros_like(eligible) for _ in range(2)]
+    realized_ratios = torch.empty_like(sampled_ratios)
+    mask_counts = torch.empty(
+      (batch_size, 2), dtype=torch.long, device=attention_mask.device)
+    for batch_index in range(batch_size):
+      candidates = eligible[batch_index].nonzero(
+        as_tuple=False).flatten()
+      count = int(candidates.numel())
+      raw_counts = torch.round(
+        sampled_ratios[batch_index] * count).to(torch.long)
+      first_count = raw_counts[0].clamp(min=2, max=count)
+      second_count = raw_counts[1].clamp(
+        min=1, max=int(first_count) - 1)
+      corrected = torch.stack([first_count, second_count])
+      permutation = candidates[torch.randperm(
+        count, device=attention_mask.device)]
+      for state_index in range(2):
+        masks[state_index][
+          batch_index, permutation[:corrected[state_index]]] = True
+      mask_counts[batch_index] = corrected
+      realized_ratios[batch_index] = corrected.float() / count
+
+    return {
+      'masks': masks,
+      'ratios': realized_ratios,
+      'sampled_ratios': sampled_ratios,
+      'mask_counts': mask_counts,
+      'step_size': step_size,
+      'eligible': eligible,
+    }
+
   def _source_dropout_mask(self, masked_positions):
     """Sample joint/cache-only/current-only modes for masked queries."""
     config = self.config.step_memory.pretrain.source_dropout
@@ -1052,18 +1187,20 @@ class Diffusion(L.LightningModule):
       previous_final_hidden, return_step_kv, token_status,
       step_memory_source_mask=None, loss_token_mask=None,
       return_editable_log_probs=False,
-      return_confidence_logits=False):
+      return_confidence_logits=False, detach_cache_backbone=None):
     """Evaluate one state while returning both recurrent workspace sources."""
     loss_scale, probability = self.noise(time)
     sigma = self._sigma_from_p(probability[:, 0].unsqueeze(-1))
+    if detach_cache_backbone is None:
+      detach_cache_backbone = bool(
+        self.config.step_memory.detach_between_steps)
     output = self.forward(
       state,
       sigma=sigma,
       sample_mode=True,
       previous_step_kv=previous_step_kv,
       return_step_kv=return_step_kv,
-      detach_cache_backbone=bool(
-        self.config.step_memory.detach_between_steps),
+      detach_cache_backbone=detach_cache_backbone,
       step_memory_source_mask=step_memory_source_mask,
       previous_final_hidden=previous_final_hidden,
       token_status=token_status,
@@ -1183,8 +1320,98 @@ class Diffusion(L.LightningModule):
       'confidence_wrong_mean': tentative_confidence_wrong.detach(),
     }
 
+  def _dcachehooping_two_forward_loss(self, x0, attention_mask):
+    """Loopholing-aligned DCache + final-state local transition.
+
+    The first state writes DCache and a final hidden. The second state consumes
+    the connected DCache graph and a detached final hidden. Robustness dropout
+    is applied only to the second state, where recurrent sources exist. No
+    auxiliary forward is permitted in this objective.
+    """
+    x0, _, attention_mask = self._maybe_sub_sample(x0, attention_mask)
+    attention_mask = attention_mask.to(dtype=torch.float32)
+    trajectory = self._sample_two_forward_trajectory(x0, attention_mask)
+    first_mask, second_mask = trajectory['masks']
+    first_state = torch.where(first_mask, self.mask_index, x0)
+    second_state = torch.where(second_mask, self.mask_index, x0)
+    config = self.config.dcachehooping.two_forward
+    hooping_config = self.config.dcachehooping
+
+    # Loopholing's first-pass None sentinel becomes an explicit zero latent in
+    # the backbone. DCache remains absent: zero-valued K/V would still enter
+    # the attention softmax and is not an absence condition.
+    first_loss, first_output = self._dcachehooping_state_loss(
+      x0, first_state, attention_mask,
+      trajectory['ratios'][:, 0:1],
+      previous_step_kv=None,
+      previous_final_hidden=None,
+      return_step_kv=True,
+      token_status=None,
+      detach_cache_backbone=False)
+
+    source_mask, source_diagnostics = self._source_dropout_mask(second_mask)
+    drop_latent = (
+      self.training and self._sample_synchronized_event(
+        hooping_config.latent_dropout_probability, x0.device))
+    previous_hidden = (
+      None if drop_latent else first_output.final_hidden.detach())
+    second_loss, _ = self._dcachehooping_state_loss(
+      x0, second_state, attention_mask,
+      trajectory['ratios'][:, 1:2],
+      previous_step_kv=first_output.step_kv,
+      previous_final_hidden=previous_hidden,
+      return_step_kv=False,
+      token_status=None,
+      step_memory_source_mask=source_mask,
+      detach_cache_backbone=False)
+
+    first_weight = float(config.first_loss_weight)
+    second_weight = float(config.second_loss_weight)
+    weight_sum = first_weight + second_weight
+    total_loss = (
+      first_weight * first_loss.loss
+      + second_weight * second_loss.loss) / weight_sum
+    eligible_counts = trajectory['eligible'].sum(dim=-1)
+    diagnostics = {
+      'loss_s': first_loss.loss.detach(),
+      'loss_t': second_loss.loss.detach(),
+      'loss_first': first_loss.loss.detach(),
+      'loss_second': second_loss.loss.detach(),
+      'mask_ratio_s': trajectory['ratios'][:, 0].mean(),
+      'mask_ratio_t': trajectory['ratios'][:, 1].mean(),
+      'sampled_mask_ratio_s': trajectory['sampled_ratios'][:, 0].mean(),
+      'sampled_mask_ratio_t': trajectory['sampled_ratios'][:, 1].mean(),
+      'step_size': trajectory['step_size'].mean(),
+      'revealed_tokens': (
+        trajectory['mask_counts'][:, 0]
+        - trajectory['mask_counts'][:, 1]).float().mean(),
+      'remaining_masks': trajectory['mask_counts'][:, 1].float().mean(),
+      'fully_masked_s_fraction': (
+        trajectory['mask_counts'][:, 0]
+        == eligible_counts).float().mean(),
+      'final_state_dropout_fraction': torch.tensor(
+        float(drop_latent), device=x0.device),
+      'cache_only_probability': source_diagnostics[
+        'cache_only_probability'],
+      'cache_only_fraction': source_diagnostics['cache_only_fraction'],
+      'current_only_fraction': source_diagnostics['current_only_fraction'],
+      'loss_weight_sum': torch.tensor(weight_sum, device=x0.device),
+      'num_forwards': torch.tensor(2.0, device=x0.device),
+      'final_state_detached': torch.tensor(1.0, device=x0.device),
+      'dcache_graph_connected': torch.tensor(1.0, device=x0.device),
+      'gate_mean': self._step_memory_gate_mean().detach(),
+      'loss_base': total_loss.detach(),
+      'loss_total': total_loss.detach(),
+    }
+    return total_loss, second_loss, diagnostics
+
   def _dcachehooping_pretrain_loss(self, x0, attention_mask):
     """DCache-v2 plus detached final-state memory and direct correction."""
+    adjacent_enabled = bool(getattr(
+      getattr(self.config.dcachehooping, 'adjacent_grad', {}),
+      'enabled', False))
+    adjacent_gradients = AdjacentCacheGradients(
+      enabled=adjacent_enabled and self.training)
     x0, _, attention_mask = self._maybe_sub_sample(x0, attention_mask)
     attention_mask = attention_mask.to(dtype=torch.float32)
     eligible = attention_mask.bool().clone()
@@ -1233,7 +1460,7 @@ class Diffusion(L.LightningModule):
       previous_final_hidden=None,
       return_step_kv=True,
       token_status=self._dcachehooping_status(full_state))
-    previous_cache = full_output.step_kv
+    previous_cache = adjacent_gradients.consume(full_output.step_kv)
     previous_hidden = full_output.final_hidden.detach()
 
     state_weights = [
@@ -1279,7 +1506,9 @@ class Diffusion(L.LightningModule):
         t2_hidden = state_output.final_hidden.detach()
       if state_index == 3:
         t3_output = state_output
-      previous_cache = state_output.step_kv
+      previous_cache = (
+        adjacent_gradients.consume(state_output.step_kv)
+        if return_cache else None)
       previous_hidden = state_output.final_hidden.detach()
 
     full_weight = float(config.full_loss_weight)
@@ -1457,6 +1686,21 @@ class Diffusion(L.LightningModule):
       'loss_total': total_loss.detach(),
     }
     diagnostics.update(tentative_metrics)
+    if adjacent_enabled:
+      # Every consumer input is an independent leaf. Frozen direct loss VJPs
+      # bridge back into its producer once, never recursively across a third
+      # state. Includes the correctly weighted identity objective above.
+      total_loss = adjacent_gradients.attach(total_loss)
+      diagnostics.update({
+        'num_forwards': torch.tensor(5.0, device=x0.device),
+        'adjacent_gradient_horizon': torch.tensor(1.0, device=x0.device),
+        'adjacent_gradient_edges': torch.tensor(
+          float(adjacent_gradients.num_edges), device=x0.device),
+        'adjacent_input_gradient_norm': (
+          adjacent_gradients.cotangent_norm
+          if adjacent_gradients.cotangent_norm is not None
+          else torch.tensor(0.0, device=x0.device)),
+      })
     return total_loss, state_losses[2], diagnostics
 
   def _objective_matched_multistate_loss(self, x0, attention_mask):
@@ -1546,9 +1790,15 @@ class Diffusion(L.LightningModule):
     if dcache_pretrain or objective_matched:
       if dcache_pretrain:
         if bool(getattr(self.config.dcachehooping, 'enabled', False)):
-          total_loss, reference_loss, diagnostics = \
-            self._dcachehooping_pretrain_loss(
-              batch['input_ids'], batch['attention_mask'])
+          if bool(getattr(
+              self.config.dcachehooping.two_forward, 'enabled', False)):
+            total_loss, reference_loss, diagnostics = \
+              self._dcachehooping_two_forward_loss(
+                batch['input_ids'], batch['attention_mask'])
+          else:
+            total_loss, reference_loss, diagnostics = \
+              self._dcachehooping_pretrain_loss(
+                batch['input_ids'], batch['attention_mask'])
         else:
           total_loss, reference_loss, diagnostics = \
             self._step_memory_pretrain_loss(
@@ -1671,6 +1921,9 @@ class Diffusion(L.LightningModule):
 
   def _step_memory_validation_step(self, batch):
     """Validate the twice-warmed t2 state and all trajectory components."""
+    if bool(getattr(
+        self.config.dcachehooping.two_forward, 'enabled', False)):
+      return self._two_forward_validation_step(batch)
     if bool(getattr(self.config.dcachehooping, 'enabled', False)):
       total_loss, reference_loss, diagnostics = \
         self._dcachehooping_pretrain_loss(
@@ -1723,6 +1976,44 @@ class Diffusion(L.LightningModule):
         self.log(
           f'val/{name}', diagnostics[name], on_step=False, on_epoch=True,
           sync_dist=True, batch_size=batch_size)
+    return total_loss
+
+  def _two_forward_validation_step(self, batch):
+    """Validate the second state of the strict two-forward transition."""
+    total_loss, reference_loss, diagnostics = \
+      self._dcachehooping_two_forward_loss(
+        batch['input_ids'], batch['attention_mask'])
+    token_mask = reference_loss.token_mask.clone()
+    if self.ignore_bos:
+      token_mask[:, 0] = 0
+    comparable_second_loss = (
+      reference_loss.nlls * token_mask).sum() / token_mask.sum().clamp_min(1)
+    self.metrics.valid_nlls.update(reference_loss.nlls, token_mask)
+    batch_size = batch['input_ids'].shape[0]
+    metrics_to_log = {
+      'loss_s': diagnostics['loss_s'],
+      'loss_t': comparable_second_loss,
+      'loss_first': diagnostics['loss_first'],
+      'loss_second': comparable_second_loss,
+      'loss_total': total_loss,
+      'mask_ratio_s': diagnostics['mask_ratio_s'],
+      'mask_ratio_t': diagnostics['mask_ratio_t'],
+      'step_size': diagnostics['step_size'],
+      'revealed_tokens': diagnostics['revealed_tokens'],
+      'remaining_masks': diagnostics['remaining_masks'],
+      'fully_masked_s_fraction': diagnostics['fully_masked_s_fraction'],
+      'final_state_dropout_fraction': diagnostics[
+        'final_state_dropout_fraction'],
+      'cache_only_fraction': diagnostics['cache_only_fraction'],
+      'current_only_fraction': diagnostics['current_only_fraction'],
+      'gate_mean': diagnostics['gate_mean'],
+      'num_forwards': diagnostics['num_forwards'],
+      'loss_weight_sum': diagnostics['loss_weight_sum'],
+    }
+    for name, value in metrics_to_log.items():
+      self.log(
+        f'val/{name}', value, on_step=False, on_epoch=True,
+        sync_dist=True, batch_size=batch_size)
     return total_loss
 
   def _objective_matched_validation_step(self, batch):

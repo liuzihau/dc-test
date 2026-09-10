@@ -1,0 +1,980 @@
+{
+  "checkpoint": {
+    "ema_shadow_count": 181,
+    "ema_updates": 1500,
+    "global_step": 1500,
+    "lightning_version": "2.5.0.post0",
+    "model_state_entries": 182,
+    "optimizer_state_entries": 181,
+    "scheduler_last_epochs": [
+      1500
+    ],
+    "scientific_config": {
+      "algo": {
+        "T": 0,
+        "backbone": "dit",
+        "causal_attention": false,
+        "clip_search_delta": 0.05,
+        "clip_search_widths": [],
+        "cross_attn": false,
+        "dropout": 0.0,
+        "fix_clipping": false,
+        "ignore_bos": true,
+        "mdlm_loss_scale": false,
+        "name": "mdlm",
+        "parameterization": "subs",
+        "sampler": "semi_ar",
+        "time_conditioning": false,
+        "var_min": false
+      },
+      "block_size": 1024,
+      "data": {
+        "insert_train_eos": true,
+        "insert_train_special": false,
+        "insert_valid_eos": false,
+        "insert_valid_special": false,
+        "streaming": false,
+        "tokenizer_name_or_path": "gpt2",
+        "train": "openwebtext-train",
+        "valid": "openwebtext-valid",
+        "wrap": true
+      },
+      "dcachehooping": {
+        "adjacent_grad": {
+          "enabled": true
+        },
+        "confidence": {
+          "enabled": false,
+          "loss_weight": 0.0
+        },
+        "enabled": true,
+        "exclusive_auxiliary_routes": true,
+        "identity_final_probability": 0.5,
+        "latent_dropout_probability": 0.1,
+        "latent_mask_loss_weight": 0.0,
+        "latent_mask_probability": 0.0,
+        "status_embedding": {
+          "enabled": false
+        },
+        "tentative": {
+          "batch_probability": 0.0,
+          "enabled": false,
+          "loss_weight": 0.0
+        },
+        "two_forward": {
+          "enabled": false,
+          "first_loss_weight": 0.8,
+          "max_first_mask_ratio": 1.0,
+          "second_loss_weight": 1.25
+        }
+      },
+      "diffusion": "absorbing_state",
+      "loader": {
+        "eval_global_batch_size": 512,
+        "global_batch_size": 512
+      },
+      "lr_scheduler": {
+        "_target_": "transformers.get_constant_schedule_with_warmup",
+        "num_warmup_steps": 2500
+      },
+      "model": {
+        "adaln": false,
+        "attn_backend": "sdpa",
+        "cond_dim": 128,
+        "dropout": 0.1,
+        "hidden_size": 768,
+        "length": 1024,
+        "n_blocks": 12,
+        "n_heads": 12,
+        "name": "small",
+        "scale_by_sigma": true,
+        "tie_word_embeddings": true,
+        "type": "ddit"
+      },
+      "noise": {
+        "sigma_max": 20,
+        "sigma_min": 0.0001,
+        "type": "loglinear"
+      },
+      "optim": {
+        "beta1": 0.9,
+        "beta2": 0.999,
+        "eps": 1e-08,
+        "lr": 0.0003,
+        "weight_decay": 0
+      },
+      "seed": 1,
+      "step_memory": {
+        "detach_between_steps": false,
+        "enabled": true,
+        "gate": {
+          "enabled": true,
+          "init": 0.1
+        },
+        "pretrain": {
+          "enabled": true,
+          "full_loss_weight": 0.05,
+          "identity": {
+            "batch_probability": 0.25,
+            "enabled": true,
+            "margin": 0.05,
+            "weight": 0.1
+          },
+          "max_t0_mask_ratio": 0.9975,
+          "source_dropout": {
+            "cache_only_probability": 0.2,
+            "current_only_probability": 0.05,
+            "enabled": true,
+            "warmup_steps": 1000
+          },
+          "step_size_max": 0.1,
+          "step_size_min": 0.025,
+          "t0_loss_weight": 0.1,
+          "t1_loss_weight": 0.2,
+          "t2_loss_weight": 1.0,
+          "t3_loss_weight": 0.7,
+          "teacher_token_probability": 1.0
+        },
+        "rollout": {
+          "curriculum_steps": 50000,
+          "enabled": false,
+          "final_mask_ratio_end": 0.0625,
+          "final_mask_ratio_start": 0.9375,
+          "forwards_end": 5,
+          "forwards_start": 2,
+          "nucleus_p": 0.9,
+          "teacher_token_probability": 0.85,
+          "weight": 0.1
+        },
+        "spatial_rope_dim": 48,
+        "temporal_rope_dim": 16,
+        "use_previous_kv": true
+      },
+      "trainer": {
+        "gradient_clip_val": 1.0,
+        "precision": "bf16-mixed"
+      },
+      "training": {
+        "antithetic_sampling": true,
+        "coeff_clip": -1.0,
+        "ema": 0.9999,
+        "eval_nll": true,
+        "from_pretrained": null,
+        "objective_matched_multistate": {
+          "enabled": false
+        },
+        "resample": false,
+        "sampling_eps": 0.001,
+        "sampling_eps_max": 1.0,
+        "sampling_eps_min": 0.001
+      }
+    },
+    "scientific_config_sha256": "f9bedce0fd925149cbc3187ecdc9afb7e23b3d558a42193663f0ed0e2ea8110a",
+    "sha256": "37974b6e99adea40de6550865d343dfdf2e4d06f7077d79166f56b8fb98f0e4d",
+    "size_bytes": 3188080291
+  },
+  "created_utc": "2026-09-10T05:10:32.669316+00:00",
+  "datasets": {
+    "train": {
+      "directory": "openwebtext-train_train_bs1024_wrapped_specialFalse.dat",
+      "features": {
+        "attention_mask": {
+          "_type": "Sequence",
+          "feature": {
+            "_type": "Value",
+            "dtype": "float32"
+          }
+        },
+        "input_ids": {
+          "_type": "Sequence",
+          "feature": {
+            "_type": "Value",
+            "dtype": "int32"
+          }
+        }
+      },
+      "loaded_fingerprint": "8a8e3d1242e38ab0",
+      "metadata": {
+        "dataset_info.json": {
+          "sha256": "6b3c0dde53c38fa680ff5757aabe09571bedadf2716a1e25cfceed25ff86d38f",
+          "size_bytes": 16232
+        },
+        "state.json": {
+          "sha256": "83c59ec6e959d9b047c1240cc73c1f23a8f754a4e0009d4e32b3a577345871a7",
+          "size_bytes": 8625
+        }
+      },
+      "num_rows": 8713822,
+      "sample_rows": [
+        {
+          "row": 0,
+          "sha256": "7caf3b2075b5a714414081045de40d15717bc096f673d6028a14b4bcfe87e60c"
+        },
+        {
+          "row": 544613,
+          "sha256": "c1c3823807b71524b05ba7e8824333343e4c4384e6bdb502670187d895295702"
+        },
+        {
+          "row": 1089227,
+          "sha256": "ea381c55e563a04da1432149bb9bf172c474fabc822486360391087938ca1306"
+        },
+        {
+          "row": 1633841,
+          "sha256": "39522fdc324d1fbf0131c4f660f53aeeb501488d9fea772867dff6a3826dccc9"
+        },
+        {
+          "row": 2178455,
+          "sha256": "4eff57fb4810ea674e684b2a50fa71f2c38830a29358a3ca75fefea12255f682"
+        },
+        {
+          "row": 2723069,
+          "sha256": "5be24abffc45d898dc765ee09d71f4e9c600063416815c008aa4328aacee5ffc"
+        },
+        {
+          "row": 3267682,
+          "sha256": "5b36f1274a1b133ff05d61f78d95152acce58101dfd1e3748541921b6f680987"
+        },
+        {
+          "row": 3812296,
+          "sha256": "605762eb7a529c448f157620dafab52fb885658e907907bd1be0eb005451bec9"
+        },
+        {
+          "row": 4356910,
+          "sha256": "ec9ad8240c64422c1a30dd3d97d14c491f58d382036d90010d4c7ae64b757c41"
+        },
+        {
+          "row": 4901524,
+          "sha256": "0c2e4a93b517de9320fef034b22fa5c1eb4b0a91d25b580611e49912678708aa"
+        },
+        {
+          "row": 5446138,
+          "sha256": "e9b04ba09c74afc19d72ca8f448a4c31d7d029d05b6a18e578a753867c5faaa3"
+        },
+        {
+          "row": 5990751,
+          "sha256": "949725b71b252fd0ca13d0c619e70032f05fb4c2e7e596f9e1233fd9e8fe8674"
+        },
+        {
+          "row": 6535365,
+          "sha256": "ed1d04abc8de358f9fb7ecbca0c55c4e2ca68ec3ff74b1d3ab116c00459d912b"
+        },
+        {
+          "row": 7079979,
+          "sha256": "3f0c1f7d14d168d2caadf24ef97f6f995c1f3b4453b6cba9e322b23b26a79c13"
+        },
+        {
+          "row": 7624593,
+          "sha256": "fd436c02af8f525fea5be9ea8152d037ac2f4add2ba063cb1354177c3da7b572"
+        },
+        {
+          "row": 8169207,
+          "sha256": "774410dfa9a14bd3fecab604cd59e0d428afbc73235cf68fcfae0691cb8095d9"
+        },
+        {
+          "row": 8713821,
+          "sha256": "2afb0631e36a52320a3eb24f2664a78e0d0b15270fe34abe623f3951497e2184"
+        }
+      ],
+      "shards": [
+        {
+          "filename": "data-00000-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00001-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00002-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00003-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00004-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00005-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00006-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00007-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00008-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00009-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00010-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00011-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00012-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00013-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00014-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00015-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00016-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00017-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00018-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00019-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00020-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00021-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00022-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00023-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00024-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00025-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00026-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00027-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00028-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00029-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00030-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00031-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00032-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00033-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00034-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00035-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00036-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00037-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00038-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00039-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00040-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00041-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00042-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00043-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00044-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00045-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00046-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00047-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00048-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00049-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00050-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00051-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00052-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00053-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00054-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00055-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00056-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00057-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00058-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00059-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00060-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00061-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00062-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00063-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00064-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00065-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00066-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00067-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00068-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00069-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00070-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00071-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00072-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00073-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00074-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00075-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00076-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00077-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00078-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00079-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00080-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00081-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00082-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00083-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00084-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00085-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00086-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00087-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00088-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00089-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00090-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00091-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00092-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00093-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00094-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00095-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00096-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00097-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00098-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00099-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00100-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00101-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00102-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00103-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00104-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00105-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00106-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00107-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00108-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00109-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00110-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00111-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00112-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00113-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00114-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00115-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00116-of-00143.arrow",
+          "size_bytes": 499694304
+        },
+        {
+          "filename": "data-00117-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00118-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00119-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00120-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00121-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00122-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00123-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00124-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00125-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00126-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00127-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00128-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00129-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00130-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00131-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00132-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00133-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00134-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00135-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00136-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00137-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00138-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00139-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00140-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00141-of-00143.arrow",
+          "size_bytes": 499686096
+        },
+        {
+          "filename": "data-00142-of-00143.arrow",
+          "size_bytes": 499686096
+        }
+      ],
+      "size_bytes": 71456096921,
+      "state_fingerprint": "f41a45133c30f459"
+    },
+    "validation": {
+      "directory": "openwebtext-valid_validation_bs1024_wrapped_specialFalse.dat",
+      "features": {
+        "attention_mask": {
+          "_type": "Sequence",
+          "feature": {
+            "_type": "Value",
+            "dtype": "float32"
+          }
+        },
+        "input_ids": {
+          "_type": "Sequence",
+          "feature": {
+            "_type": "Value",
+            "dtype": "int32"
+          }
+        }
+      },
+      "loaded_fingerprint": "f7cb507d5b4b43b8",
+      "metadata": {
+        "dataset_info.json": {
+          "sha256": "6b3c0dde53c38fa680ff5757aabe09571bedadf2716a1e25cfceed25ff86d38f",
+          "size_bytes": 16232
+        },
+        "state.json": {
+          "sha256": "5d9dc873312119f4c62e434784136dd3c6bb2ae2da1f35709fb836a6fb4061b5",
+          "size_bytes": 306
+        }
+      },
+      "num_rows": 110143,
+      "sample_rows": [
+        {
+          "row": 0,
+          "sha256": "750dcc002ef56d65d3b4dbcdc73c3d4b4c519f0b0ffae901c95425ca74b16076"
+        },
+        {
+          "row": 6883,
+          "sha256": "be5378104f241d690ffc27732af52398a2bccf366cc498f450fb33dc847a2716"
+        },
+        {
+          "row": 13767,
+          "sha256": "c5fb5e3c6a7fbd3b5dde2949850a508d59b4905d43897532ec95d9cf97e252d5"
+        },
+        {
+          "row": 20651,
+          "sha256": "4d73f87ac294fee06a26ec592fcb9d9ed513f5778916dcd4187c8347a79bc26c"
+        },
+        {
+          "row": 27535,
+          "sha256": "b0013a5988f3187f7a5ecb3c0c9cb8aa154177eee2c1aec427988235bb71295d"
+        },
+        {
+          "row": 34419,
+          "sha256": "ad550fd4994fd22f9da6eb1609ea8a6be10aa858002e0bf994aa30560e0550dd"
+        },
+        {
+          "row": 41303,
+          "sha256": "37d5013de38e3c8dfd8068d5177a0775c69746c8cb9016d61e73d416378e452e"
+        },
+        {
+          "row": 48187,
+          "sha256": "533a8ecdb001b5eb55af972354f29ba4b4ae3e0b346c7da0af3a6e2a191f1f36"
+        },
+        {
+          "row": 55071,
+          "sha256": "1fbc84023fa9a8ff3aa92a818aa489e024d2aefad5e47404ce3158fbb0f4a1d1"
+        },
+        {
+          "row": 61954,
+          "sha256": "92341a3d296bb731c6b974d9a78ca0442ee2bff1dba9c51562ab5b2f1b2a4aa6"
+        },
+        {
+          "row": 68838,
+          "sha256": "3308244df071548151de499d3aac9e606c68ffa9813128a16f2e8f3edc7a66a0"
+        },
+        {
+          "row": 75722,
+          "sha256": "eec1982ad26214eb744aa56046cbf6b59e2ac5909da5e41878eca1a73eccda26"
+        },
+        {
+          "row": 82606,
+          "sha256": "05673000369a0c063b5864289908623e7bf0bc16c58742b8bd9648c2cc6c8981"
+        },
+        {
+          "row": 89490,
+          "sha256": "a8fbc75d9806f1293faa577798a09b4bf984aea7f0a9203b1e053e5e312b87dc"
+        },
+        {
+          "row": 96374,
+          "sha256": "94e66d01e42654826e0e8eeaba9b1b97d0f3cb295a277d487fa6906568b752f0"
+        },
+        {
+          "row": 103258,
+          "sha256": "be743bdad1074555a31ee3940cf973b6709544c552e671c69754bacf617d2dda"
+        },
+        {
+          "row": 110142,
+          "sha256": "76bb0a51866dd18c951f0f8dbbe238194e02464758a12884a0a082805e822ede"
+        }
+      ],
+      "shards": [
+        {
+          "filename": "data-00000-of-00002.arrow",
+          "size_bytes": 451607984
+        },
+        {
+          "filename": "data-00001-of-00002.arrow",
+          "size_bytes": 451599776
+        }
+      ],
+      "size_bytes": 903224298,
+      "state_fingerprint": "c234457f6db8ce22"
+    }
+  },
+  "sample_rows_per_split": 17,
+  "schema_version": 1,
+  "source_packages": {
+    "datasets": "3.3.2",
+    "lightning": "2.5.0.post0",
+    "numpy": "1.26.4",
+    "pyarrow": "21.0.0",
+    "torch": "2.7.1",
+    "transformers": "4.49.0"
+  },
+  "verification": "Full checkpoint SHA-256; exact Arrow names/sizes and metadata hashes; deterministic sampled packed rows, NOT all-token hashing."
+}

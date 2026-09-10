@@ -969,6 +969,9 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     dcachehooping_config = getattr(config, 'dcachehooping', {})
     self.dcachehooping_enabled = bool(getattr(
       dcachehooping_config, 'enabled', False))
+    two_forward_config = getattr(dcachehooping_config, 'two_forward', {})
+    self.dcachehooping_two_forward_enabled = bool(getattr(
+      two_forward_config, 'enabled', False))
     status_config = getattr(dcachehooping_config, 'status_embedding', {})
     confidence_config = getattr(dcachehooping_config, 'confidence', {})
     self.dcachehooping_status_enabled = bool(getattr(
@@ -981,8 +984,19 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     if self.dcachehooping_enabled:
       # A zero scale makes an adapted DCache-v2 checkpoint logit-identical
       # before the new recurrent latent path has learned to contribute.
-      self.dcachehooping_latent_norm = LayerNorm(dim)
-      self.dcachehooping_latent_norm.weight.data.zero_()
+      if self.dcachehooping_two_forward_enabled:
+        # Match Loopholing exactly for the new two-forward mode: the same
+        # affine LayerNorm processes an explicit zero latent on the first
+        # pass and the previous final hidden on the second pass. Both affine
+        # parameters start at zero, so enabling the path is initially neutral.
+        self.dcachehooping_latent_norm = nn.LayerNorm(dim)
+        self.dcachehooping_latent_norm.weight.data.zero_()
+        self.dcachehooping_latent_norm.bias.data.zero_()
+      else:
+        # Preserve the parameterization and checkpoint schema of every legacy
+        # DCachehooping/final-state run.
+        self.dcachehooping_latent_norm = LayerNorm(dim)
+        self.dcachehooping_latent_norm.weight.data.zero_()
       if self.dcachehooping_status_enabled:
         self.dcachehooping_status_embed = nn.Embedding(3, dim)
         self.dcachehooping_status_embed.weight.data.zero_()
@@ -1075,6 +1089,11 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
               return_dcachehooping=False,
               return_confidence_logits=False):
     x = self.vocab_embed(indices)
+    if (self.dcachehooping_two_forward_enabled
+        and previous_final_hidden is None):
+      # The public caller uses None for "no previous state"; Loopholing turns
+      # that sentinel into an explicit zero latent inside the backbone.
+      previous_final_hidden = torch.zeros_like(x)
     if previous_final_hidden is not None:
       if not self.dcachehooping_enabled:
         raise ValueError(

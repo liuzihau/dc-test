@@ -1,0 +1,223 @@
+{
+  "date": "2026-09-09",
+  "purpose": "Lossless documentation consolidation; archived notes are historical, not current run instructions.",
+  "zip": "source_notes.zip",
+  "zip_sha256": "b7203b5c5ba1e4beb32e6f533f18d1c69bc23ffdc47d28eca6790541f7431556",
+  "documents": [
+    {
+      "source": "README.md",
+      "bytes": 11683,
+      "sha256": "60a92874105561714f4c1698de4f2fc8e98f24c3d1dcee37b89acd8298e383ad",
+      "action": "snapshot-and-replace-with-current-navigation",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#documentation-policy-and-archive"
+    },
+    {
+      "source": "ADJACENT_GRADIENT_PROGRESS.md",
+      "bytes": 9159,
+      "sha256": "955224aa8ab1b7d61826cb33a16a9b05996e5d3ac99f8e447095884255b1b198",
+      "action": "integrate-and-retire-original-to-zip",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#current-design"
+    },
+    {
+      "source": "ANCHOR_SCHEDULE_PROGRESS.md",
+      "bytes": 8081,
+      "sha256": "62b0ed1de6faeb04794378b855a4d45455569a2edd6a808c32d077cc08c9b43a",
+      "action": "integrate-and-retire-original-to-zip",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#experiment-and-decision-diary"
+    },
+    {
+      "source": "DCACHEHOOPING_IMPLEMENTATION.md",
+      "bytes": 7958,
+      "sha256": "03ed31eef572f6d8760441886a365ff42f66c8aca2a82f987c56f0d29aa637a0",
+      "action": "integrate-and-retire-original-to-zip",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#experiment-and-decision-diary"
+    },
+    {
+      "source": "DCACHE_NEXT_RESEARCH_STRATEGY.md",
+      "bytes": 19960,
+      "sha256": "7c165e8c322af4b4ddc9afa23ca1b56f64611f0f3e3fde016f70d4c098037844",
+      "action": "integrate-and-retire-original-to-zip",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#research-question-and-claims"
+    },
+    {
+      "source": "DCACHE_RESEARCH_SUMMARY.md",
+      "bytes": 24363,
+      "sha256": "edd1413842690d8af5551ef36ded0e3b7b97e2117ded5d943848aac645d5482a",
+      "action": "integrate-and-retire-original-to-zip",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#experiment-and-decision-diary"
+    },
+    {
+      "source": "DCACHE_RUNBOOK.md",
+      "bytes": 30102,
+      "sha256": "4c6d33f399c7973078d85e713c9e2c6834cc64fd5d9e172a067a3fa0b9c19e3a",
+      "action": "integrate-and-retire-original-to-zip",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#operating-the-repository"
+    },
+    {
+      "source": "DCACHE_V2_IMPLEMENTATION_WORK_NOTE.md",
+      "bytes": 14905,
+      "sha256": "f915f4329fd602f021f4e8b0c7ba07b1d79306da39626e4101a41af50203ca1e",
+      "action": "integrate-and-retire-original-to-zip",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#current-design"
+    },
+    {
+      "source": "FINAL_DENOISING_CACHE_PLAN.md",
+      "bytes": 9086,
+      "sha256": "3e6ae0822e6605661aae1c965e1fde9e7fb2255f9a53448a40d0b798d8ac38a9",
+      "action": "integrate-and-retire-original-to-zip",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#current-design"
+    },
+    {
+      "source": "PROJECT_SERVER_HANDOFF.md",
+      "bytes": 27554,
+      "sha256": "4169eb6daac13186cd62c04cd8919f063b97ebf3e8fa4aa07a594f7e6b798e8f",
+      "action": "integrate-and-retire-original-to-zip",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#experiment-and-decision-diary"
+    },
+    {
+      "source": "TWO_FORWARD_DCACHE_PROGRESS.md",
+      "bytes": 3651,
+      "sha256": "1fd120f92f5a71c6406d44956e183fe69e1ddc2f99f5d33b0cc791b686de6735",
+      "action": "integrate-and-retire-original-to-zip",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#current-design"
+    },
+    {
+      "source": "URGENT_RECURRENCE_AUDIT_PROGRESS.md",
+      "bytes": 7477,
+      "sha256": "2f4421cf8bd2d40b21d90e892d21812a689ddf45a666a67232252519e64b984d",
+      "action": "integrate-and-retire-original-to-zip",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#measured-results-and-their-limits"
+    },
+    {
+      "source": "bd3_denoising_kv_research_plan.md",
+      "bytes": 36460,
+      "sha256": "3ba2aa761afdfa61d7a160a6d1ed15da7d7a2dd8a8613751f50ccc2993804b19",
+      "action": "integrate-and-retire-original-to-zip",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#experiment-and-decision-diary"
+    },
+    {
+      "source": "docs/README.md",
+      "bytes": 1397,
+      "sha256": "8db06fec9dcb82f1788d09080f1889f49b4298e8275c2b4961e7c07e795b87b8",
+      "action": "integrate-and-retire-original-to-zip",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#documentation-policy-and-archive"
+    },
+    {
+      "source": "docs/REPOSITORY_MAP.md",
+      "bytes": 1835,
+      "sha256": "2935df3130bd0dfcdcfe1aa4ae341163fab2412aa0acd597efaab14cd0ca3bab",
+      "action": "integrate-and-retire-original-to-zip",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#repository-map"
+    },
+    {
+      "source": "docs/research/DCACHE_NOVELTY_THEORY_REVIEW_2026-09-08.md",
+      "bytes": 27107,
+      "sha256": "e2cc673af5d0a6f58779ebc5dae8324ea7d57b1f9fe3b98cbc5424b78d192535",
+      "action": "integrate-and-retire-original-to-zip",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#novelty-review"
+    },
+    {
+      "source": "docs/research/DCACHE_RECURRENCE_THEORY_2026-09-08.md",
+      "bytes": 18275,
+      "sha256": "d4e70665a445ddb6e144d1438c73db91937fa011304a95322e112bf9b05aa306",
+      "action": "integrate-and-retire-original-to-zip",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#recurrence-theory"
+    },
+    {
+      "source": "scripts/train/README.md",
+      "bytes": 6486,
+      "sha256": "879fa098be4c3a352cbd7a0949c33dba77fe7b15c73349bcc29c00efdc147af4",
+      "action": "integrate-and-retire-original-to-zip",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#operating-the-repository"
+    },
+    {
+      "source": "scripts/eval/README.md",
+      "bytes": 6951,
+      "sha256": "cb12259925deaeab764e4442d75e773325f061b52b752b12708c0a447bdc737a",
+      "action": "integrate-and-retire-original-to-zip",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#operating-the-repository"
+    },
+    {
+      "source": "results/README.md",
+      "bytes": 2506,
+      "sha256": "edc38c04f21296d053ebfe28ffa59c4417efc693787ee793ffa75370e07a44c5",
+      "action": "integrate-and-retire-original-to-zip",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#measured-results-and-their-limits"
+    },
+    {
+      "source": "results/archive_manifest.md",
+      "bytes": 1257,
+      "sha256": "2fc102e5c9e85236a03af524faa9dfe5ec2bcf47035642cdffbdf213fd8586a2",
+      "action": "integrate-and-retire-original-to-zip",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#documentation-policy-and-archive"
+    },
+    {
+      "source": "ssd-lm/README.md",
+      "bytes": 3099,
+      "sha256": "514bf7c780065490027f74151961b75fcb9c8c5019bd5aebe6c4c07c187f0d7d",
+      "action": "integrate-and-retire-original-to-zip",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#documentation-policy-and-archive"
+    },
+    {
+      "source": "iclr2027-paper/README.md",
+      "bytes": 6295,
+      "sha256": "24814c22c7a0d91882773ad0714459e67946345f668b2e6b9ceed6cf8f72a750",
+      "action": "snapshot-and-retain-independent-paper-repository",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#operating-the-repository"
+    },
+    {
+      "source": "iclr2027-paper/OVERLEAF.md",
+      "bytes": 5204,
+      "sha256": "e8bd1ab372b7d5a1755543bf11dada888e77afd28c399dee543aa36c848a6b47",
+      "action": "snapshot-and-retain-independent-paper-repository",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#operating-the-repository"
+    },
+    {
+      "source": "iclr2027-paper/PAPER_PROGRESS.md",
+      "bytes": 6437,
+      "sha256": "6b30789ea9c6db177f349dbd087c2853506895c0b743189ba557d84d7addc361",
+      "action": "snapshot-and-retain-independent-paper-repository",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#operating-the-repository"
+    },
+    {
+      "source": "iclr2027-paper/TEMPLATE_PROVENANCE.md",
+      "bytes": 2058,
+      "sha256": "85eac9b3e41c0d1c1a9345a515c897ee62b265bc5cac60b56a48d1efab58f271",
+      "action": "snapshot-and-retain-independent-paper-repository",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#operating-the-repository"
+    },
+    {
+      "source": "iclr2027-paper/data/README.md",
+      "bytes": 4188,
+      "sha256": "b73091730458f3495db92489a2bd488907cca82fe643d04d0c5a2c63fd7c82e0",
+      "action": "snapshot-and-retain-independent-paper-repository",
+      "integrated_at": "RESEARCH_EXPERIMENT_LOG.md#operating-the-repository"
+    }
+  ],
+  "upstream_assets": [
+    {
+      "source": "LICENSE",
+      "destination": "legacy/upstream/bd3/LICENSE",
+      "bytes": 11357,
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "source": "graphical_abstract.png",
+      "destination": "legacy/upstream/bd3/graphical_abstract.png",
+      "bytes": 225205,
+      "sha256": "f4243f00e965cdfc0fa8023e917c6aeca409c0c967394b8212c52ebab3da848b"
+    },
+    {
+      "source": "2503.09573v3.pdf",
+      "destination": "legacy/upstream/bd3/2503.09573v3.pdf",
+      "bytes": 862037,
+      "sha256": "d57ae21f556a9c1d5d5a95b2067d3232933be2d421b484bea7cc2b39b980ce92"
+    }
+  ],
+  "preserved_exceptions": [
+    "iclr2027-paper/ independent repository documentation",
+    "outputs/** generated evaluation reports and provenance",
+    "archive/** pre-existing historical result archive",
+    "dependency and cache-generated README files"
+  ]
+}

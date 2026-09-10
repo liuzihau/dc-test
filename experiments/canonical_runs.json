@@ -42,6 +42,16 @@
         "metric_column": "val_loss_t2"
       },
       "status": "complete"
+    },
+    {
+      "id": "dcache_final_state_adjacent",
+      "label": "DCache + final state (connected, 1-hop)",
+      "role": "adjacent_credit_ablation",
+      "path": "outputs/owt-dcache-final-state-adjacent-pretrain-5k-2x3090",
+      "train_metric": "trainer/loss_t2",
+      "validation_metric": "val/loss_t2",
+      "color": "#d62728",
+      "status": "running"
     }
   ],
   "evaluations": [

@@ -50,6 +50,7 @@ def compose_eval_config(
     num_workers: int = 2,
     gate_enabled: bool = False,
     final_state_enabled: bool = False,
+    two_forward_enabled: bool = False,
 ):
   """Compose the exact small/MDLM/1024 configuration used by both runs."""
   register_resolvers()
@@ -100,6 +101,14 @@ def compose_eval_config(
         'dcachehooping.confidence.loss_weight=0.0',
         'dcachehooping.identity_final_probability=0.50',
       ])
+      if two_forward_enabled:
+        overrides.extend([
+          'step_memory.detach_between_steps=false',
+          'step_memory.pretrain.identity.enabled=false',
+          'dcachehooping.two_forward.enabled=true',
+        ])
+    elif two_forward_enabled:
+      raise ValueError('Two-forward recurrence requires final_state_enabled')
     return hydra.compose(
       config_name='config',
       overrides=overrides)

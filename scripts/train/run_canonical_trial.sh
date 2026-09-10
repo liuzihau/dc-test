@@ -5,7 +5,7 @@ if (( $# < 2 )); then
   cat >&2 <<'EOF'
 Usage: run_canonical_trial.sh VARIANT RUN_DIR [extra Hydra overrides...]
 
-VARIANT: vanilla | objective | dcache-v2 | final-state
+VARIANT: vanilla | objective | dcache-v2 | final-state | two-forward | final-state-adjacent
 
 Example:
   bash scripts/train/run_canonical_trial.sh final-state outputs/my-final-state
@@ -45,6 +45,12 @@ case "$VARIANT" in
     ;;
   final-state)
     LAUNCHER="${SCRIPT_DIR}/train_owt_dcache_final_state_5k_2x3090.sh"
+    ;;
+  two-forward)
+    LAUNCHER="${SCRIPT_DIR}/train_owt_dcache_two_forward_5k_2x3090.sh"
+    ;;
+  final-state-adjacent)
+    LAUNCHER="${SCRIPT_DIR}/train_owt_dcache_final_state_adjacent_5k_2x3090.sh"
     ;;
   *)
     echo "Unknown variant: ${VARIANT}" >&2
