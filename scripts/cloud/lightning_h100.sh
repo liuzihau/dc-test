@@ -12,6 +12,7 @@ usage() {
   echo "Actions: setup | check | smoke | train | tmux | validate | plot"
   echo "Default: one visible H100 (GPU 0), microbatch 2, global batch 512, stop at 5000."
   echo "Copy imports/adjacent/0-1500.ckpt and both prepared OWT .dat directories first."
+  echo "Setup installs into the active Python environment (CPython 3.9-3.12); no conda create."
   echo "Environment overrides: DCACHE_PYTHON, DCACHE_RESUME_CKPT, DCACHE_DATA_DIR,"
   echo "  DCACHE_RUN_DIR, DCACHE_CUDA_VISIBLE_DEVICES, DCACHE_NUM_WORKERS."
 }
@@ -54,8 +55,15 @@ mkdir -p "$TMPDIR" "$PIP_CACHE_DIR" "$CONDA_PKGS_DIRS" "$MPLCONFIGDIR" \
   "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR" "$CUDA_CACHE_PATH" \
   "$TORCH_HOME" "$NUMBA_CACHE_DIR" "${REPO_DIR}/logs"
 
-ENV_DIR="${REPO_DIR}/.cache/envs/dcache"
-export DCACHE_PYTHON="${DCACHE_PYTHON:-${ENV_DIR}/bin/python}"
+# A Lightning Studio already has its one supported default environment. Use
+# that environment for every action, including new shells; never create or
+# silently switch to a second environment. tmux receives this path explicitly.
+export DCACHE_PYTHON="${DCACHE_PYTHON:-$(command -v python || true)}"
+if [[ -z "$DCACHE_PYTHON" || ! -x "$DCACHE_PYTHON" ]]; then
+  echo "No executable Python found: ${DCACHE_PYTHON:-python on PATH}." >&2
+  echo "Activate the Studio default environment, or set DCACHE_PYTHON to its Python executable." >&2
+  exit 2
+fi
 export DCACHE_CUDA_VISIBLE_DEVICES="${DCACHE_CUDA_VISIBLE_DEVICES:-0}"
 export CUDA_VISIBLE_DEVICES="$DCACHE_CUDA_VISIBLE_DEVICES"
 export DCACHE_DEVICES=1
@@ -81,23 +89,19 @@ if [[ "$ACTION" == setup ]]; then
     echo "This pinned CUDA environment targets Linux x86_64." >&2
     exit 2
   fi
-  if [[ ! -x "$DCACHE_PYTHON" ]]; then
-    if [[ "$DCACHE_PYTHON" != "${ENV_DIR}/bin/python" ]]; then
-      echo "DCACHE_PYTHON does not exist: $DCACHE_PYTHON" >&2
-      exit 2
-    fi
-    if ! command -v conda >/dev/null 2>&1; then
-      echo "Conda is required to create the matching Python 3.9 environment." >&2
-      echo "Use a Studio with conda, or set DCACHE_PYTHON to a dedicated Python 3.9 environment." >&2
-      exit 2
-    fi
-    conda create --yes --prefix "$ENV_DIR" python=3.9.25 pip
-  fi
-  "$DCACHE_PYTHON" -c 'import sys; assert sys.version_info[:2] == (3,9), "Use Python 3.9 to match the producer environment"'
+  # Exact scientific package versions have CPython wheels for this window.
+  # Python 3.13+ cannot use several of these pins. Stop before package changes;
+  # let the user select a supported version in Studio's Environment panel.
+  "$DCACHE_PYTHON" -c 'import sys
+if sys.implementation.name != "cpython" or not (3, 9) <= sys.version_info[:2] <= (3, 12):
+    sys.exit("This checkpoint recipe requires CPython 3.9-3.12. Select Python 3.10 in the Studio Environment panel, then rerun setup. No packages changed.")
+print("Using existing environment:", sys.executable, sys.version.split()[0])'
+  echo "Setup updates packages in this environment. Do not run while another job uses it."
   "$DCACHE_PYTHON" -m pip install 'pip==25.1.1'
   "$DCACHE_PYTHON" -m pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 \
     --index-url https://download.pytorch.org/whl/cu126
-  "$DCACHE_PYTHON" -m pip install -r requirements.txt -c requirements-h100-constraints.txt
+  # Do not install the local notebook/dev-tool pins into Studio's managed IDE.
+  "$DCACHE_PYTHON" -m pip install -r requirements-h100.txt
   "$DCACHE_PYTHON" -m pip check
   CUDA_VISIBLE_DEVICES='' "$DCACHE_PYTHON" -c \
     'import dataloader, diffusion, recurrent_gradients, checkpoint_resume; import torch, lightning; print("Training imports OK:", torch.__version__, lightning.__version__)'
@@ -106,10 +110,6 @@ if [[ "$ACTION" == setup ]]; then
   exit 0
 fi
 
-if [[ ! -x "$DCACHE_PYTHON" ]]; then
-  echo "Missing interpreter $DCACHE_PYTHON; run the setup action first." >&2
-  exit 2
-fi
 if [[ ! "$DCACHE_NUM_WORKERS" =~ ^[1-9][0-9]*$ ]]; then
   echo "DCACHE_NUM_WORKERS must be a positive integer (persistent workers are enabled)." >&2
   exit 2

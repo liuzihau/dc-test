@@ -417,6 +417,7 @@ def verify_transfer(checkpoint, data_dir, manifest, max_steps, cpu_only=False,
         "free_gib_near_checkpoint": free_gib,
         "output_storage": output_storage,
         "runtime_packages": packages,
+        "runtime_python": {"version": sys.version, "executable": sys.executable},
         "checkpoint_verification": ("EXACT SOURCE TRANSFER" if ckpt["sha256"] ==
                                     manifest["checkpoint"]["sha256"] else
                                     "TRUSTED NEWER LOCAL CHECKPOINT; scientific config matched"),

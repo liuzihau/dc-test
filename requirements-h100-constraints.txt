@@ -1,5 +1,9 @@
 # Additional constraints matching the environment that produced step 1500.
-# The main direct dependencies remain pinned in requirements.txt.
+# Direct dependencies match requirements.txt (cloud subset: requirements-h100.txt).
+# lightning also pulls the separate pytorch-lightning distribution without an
+# upper bound. Match the installed producer version; the trainer itself imports
+# lightning.pytorch from lightning==2.5.0.post0.
+pytorch-lightning==2.6.0
 numpy==1.26.4
 scipy==1.13.1
 pyarrow==21.0.0

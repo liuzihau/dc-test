@@ -65,10 +65,16 @@ bash scripts/cloud/lightning_h100.sh tmux     # resume the real run to 5000
 bash scripts/cloud/lightning_h100.sh plot
 ```
 
-The launcher manages its own pinned Python environment, project-local caches
-and tmux socket. It preserves global batch 512, microbatch 2, the one-hop DCache
-gradient and detached final-state feedback. CPU tests and transfer checks pass;
-the H100 smoke test must still run on the destination machine.
+Setup uses the Studio's **existing active Python environment** (CPython
+3.9–3.12); it never calls `conda create`. It installs pinned training packages
+from [requirements-h100.txt](requirements-h100.txt), without the local notebook
+tools. Do not run setup while a job uses that environment. Set `DCACHE_PYTHON`
+to an existing interpreter if needed; all launcher actions honor it.
+
+The launcher manages project-local caches and its tmux socket. It preserves
+global batch 512, microbatch 2, the one-hop DCache gradient and detached
+final-state feedback. CPU tests and transfer checks pass; package installation
+and the H100 smoke test must still pass on the destination machine.
 
 ### Local plots and trials
 
