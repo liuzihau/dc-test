@@ -253,7 +253,8 @@ def test_invalid_workers_fails_before_launch(cloud):
     assert not calls
 
 
-def test_actual_launcher_chain_composes_the_verified_scientific_recipe(cloud):
+@pytest.mark.parametrize('micro', [2, 4])
+def test_actual_launcher_chain_composes_the_verified_scientific_recipe(cloud, micro):
     from hydra import compose, initialize_config_dir
     from omegaconf import OmegaConf
     from checkpoint_resume import batch_geometry
@@ -269,7 +270,7 @@ def test_actual_launcher_chain_composes_the_verified_scientific_recipe(cloud):
         shutil.copyfile(repo / 'scripts/train' / name, scripts / name)
     # Run the real shell wrapper chain, but keep all Python/GPU calls mocked.
     (root / 'fakebin/bash').unlink()
-    result, calls = run('train', DCACHE_PREFLIGHT_ONLY='0')
+    result, calls = run('train', DCACHE_PREFLIGHT_ONLY='0', DCACHE_MICRO_BATCH=str(micro))
     assert result.returncode == 0, result.stdout + result.stderr
     command = next(item['args'] for item in calls if item['args'][:2] == ['-u', 'main.py'])
     for name, resolver in (
@@ -283,12 +284,36 @@ def test_actual_launcher_chain_composes_the_verified_scientific_recipe(cloud):
     assert scientific_config(OmegaConf.to_container(config, resolve=False)) == \
         expected['checkpoint']['scientific_config']
     assert batch_geometry(config) == {
-        'version': 1, 'world_size': 1, 'micro_batch': 2, 'global_batch': 512,
-        'accumulation': 256, 'distributed_sampler': True}
-    assert config.trainer.val_check_interval == 128000
+        'version': 1, 'world_size': 1, 'micro_batch': micro, 'global_batch': 512,
+        'accumulation': 512 // micro, 'distributed_sampler': True}
+    assert config.trainer.val_check_interval == 500 * (512 // micro)
+    assert config.loader.eval_batch_size == 2
     assert config.trainer.limit_val_batches == 200
     assert config.callbacks.checkpoint_every_n_steps.every_n_train_steps == 500
     assert config.callbacks.checkpoint_every_n_steps.save_top_k == 3
     assert config.checkpointing.allow_batch_geometry_change
     assert config.checkpointing.resume_from_ckpt
     assert config.trainer.max_steps == 5000
+
+
+def test_mb4_tmux(cloud):
+    root, run = cloud
+    result, calls = run('smoke', DCACHE_MICRO_BATCH='4')
+    assert result.returncode == 0, result.stderr
+    launch = next(item for item in calls if item['kind'] == 'bash')
+    assert launch['env']['DCACHE_MICRO_BATCH'] == '4'
+    assert launch['env']['DCACHE_MAX_STEPS'] == '1501'
+    assert 'loader.eval_batch_size=2' in launch['args']
+    result, calls = run('tmux', DCACHE_MICRO_BATCH='4')
+    assert result.returncode == 0, result.stderr
+    command = next(item for item in calls if item['kind'] == 'tmux' and 'new-session' in item['args'])['args'][-1]
+    assert 'DCACHE_MICRO_BATCH=4' in command
+    assert 'pretrain-5k-h100-mb4' in command
+
+
+@pytest.mark.parametrize('micro', ['0', '3', '8', 'oops'])
+def test_unsupported_cloud_microbatch_rejected(cloud, micro):
+    _, run = cloud
+    result, calls = run('train', DCACHE_MICRO_BATCH=micro)
+    assert result.returncode == 2
+    assert not calls

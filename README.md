@@ -76,6 +76,12 @@ global batch 512, microbatch 2, the one-hop DCache gradient and detached
 final-state feedback. CPU tests and transfer checks pass; package installation
 and the H100 smoke test must still pass on the destination machine.
 
+For the explicit H100 microbatch-4 trial, set `export DCACHE_MICRO_BATCH=4`
+before smoke/train/tmux. Global batch remains 512, accumulation becomes 128,
+and validation remains microbatch 2 × 200 batches. Training's shuffled-cache
+identity comparison group changes to four examples. A separate default output
+directory ending in `-h100-mb4` keeps this trial distinct from the reference.
+
 ### Local plots and trials
 
 For a space-limited cloud continuation, use the **compact 1500→5000 bundle**;
