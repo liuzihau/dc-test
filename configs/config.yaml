@@ -208,3 +208,6 @@ checkpointing:
   # Opt-in DDP migration only: unchanged global batch, full optimizer boundary.
   # Rewrites loaded loop/sampler counters, never the source checkpoint file.
   allow_batch_geometry_change: false
+  recovery:
+    enabled: false
+    every_seconds: 1200
