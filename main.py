@@ -73,6 +73,9 @@ def _print_config(
 def _print_batch(train_ds, valid_ds, tokenizer, k=64):
   for dl_type, dl in [
     ('train', train_ds), ('valid', valid_ds)]:
+    if hasattr(dl.dataset, 'validate_resume'):
+      print('Skipping random train preview: compact data requires the resumed sampler.')
+      continue
     print(f'Printing {dl_type} dataloader batch.')
     batch = next(iter(dl))
     print('Batch input_ids.shape', batch['input_ids'].shape)

@@ -314,6 +314,12 @@ def get_dataset(
     dataset_name, tokenizer, wrap, mode, cache_dir,
     block_size=1024, num_proc=len(os.sched_getaffinity(0)),
     streaming=False, revision : Optional[str]=None, insert_eos=True, insert_special_tokens=True):
+  from compact_training import CompactTrainingDataset, DESCRIPTOR
+  if dataset_name == 'openwebtext-train' and os.path.isfile(os.path.join(cache_dir, DESCRIPTOR)):
+    if (mode != 'train' or not wrap or block_size != 1024 or streaming
+        or not insert_eos or insert_special_tokens):
+      raise ValueError('Compact training cache requires the original OWT packing settings')
+    return CompactTrainingDataset(cache_dir)
   eos_tag = ''
   if not insert_eos:
     eos_tag = '_eosFalse'

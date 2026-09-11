@@ -78,6 +78,12 @@ and the H100 smoke test must still pass on the destination machine.
 
 ### Local plots and trials
 
+For a space-limited cloud continuation, use the **compact 1500→5000 bundle**;
+see [export and transfer instructions](RESEARCH_EXPERIMENT_LOG.md#compact-data-continuation).
+It stores only required original packed rows and full validation, preserves the
+original logical dataset length/permutation, and requires its own transfer
+manifest. It is not a new smaller dataset to reshuffle or retokenize.
+
 Refresh the registry-driven dashboard without running evaluation:
 
 ```bash

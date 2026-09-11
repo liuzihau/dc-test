@@ -497,6 +497,18 @@ class Diffusion(L.LightningModule):
           'epoch': self.fast_forward_epochs,
           'counter': (self.fast_forward_batches
                       * self.config.loader.batch_size)})
+      if hasattr(dl.dataset, 'validate_resume'):
+        if not distributed or self.fast_forward_batches is None:
+          raise ValueError('Compact training requires an explicit resumed DDP run')
+        # Match Lightning's original active distributed permutation, not the
+        # replacement sampler's implicit seed=0 default.
+        dl_sampler.seed = dl.sampler.seed
+        dl.dataset.validate_resume(
+          epoch=self.fast_forward_epochs,
+          counter=self.fast_forward_batches * self.config.loader.batch_size,
+          world_size=self.trainer.world_size,
+          global_batch=self.config.loader.global_batch_size,
+          max_steps=self.trainer.max_steps, seed=dl_sampler.seed)
       updated_dls.append(
         torch.utils.data.DataLoader(
           dl.dataset,
@@ -507,6 +519,11 @@ class Diffusion(L.LightningModule):
           shuffle=False,
           persistent_workers=True))
     self.trainer.fit_loop._combined_loader.flattened = updated_dls
+    if any(hasattr(dl.dataset, 'validate_resume') for dl in updated_dls):
+      # Lightning 2.5 constructs this iterator BEFORE on_train_start. Changing
+      # flattened alone does not replace the already active iterator.
+      from compact_training import reset_compact_fetcher
+      reset_compact_fetcher(self.trainer.fit_loop._data_fetcher)
 
   def optimizer_step(self, *args, **kwargs):
     super().optimizer_step(*args, **kwargs)

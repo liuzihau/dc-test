@@ -20,6 +20,8 @@ from pathlib import Path
 import shutil
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 
 SCHEMA_VERSION = 1
 CACHE_NAMES = {
@@ -248,11 +250,20 @@ def checkpoint_snapshot(path, expected=None, max_steps=None, allow_descendant=Fa
     return result
 
 
-def dataset_snapshot(data_dir):
+def dataset_snapshot(data_dir, compact_expected=None, original_train=None):
     import datasets
 
     snapshots = {}
     for split, dirname in CACHE_NAMES.items():
+        if split == 'train' and (Path(data_dir) / 'compact_train.json').exists():
+            require(compact_expected is not None and original_train is not None,
+                    'Compact data requires its exported trusted transfer manifest')
+            from compact_training import verify_compact
+            require(compact_expected['original_num_rows'] == original_train['num_rows'],
+                    'Compact logical dataset length differs from source manifest')
+            verify_compact(data_dir, compact_expected)
+            snapshots[split] = original_train
+            continue
         path = Path(data_dir) / dirname
         require(path.is_dir(), f"Prepared {split} cache missing: {path}; copy it first")
         metadata = {}
@@ -389,7 +400,14 @@ def verify_transfer(checkpoint, data_dir, manifest, max_steps, cpu_only=False,
             "Unexpected token-row sampling specification")
     ckpt = checkpoint_snapshot(checkpoint, manifest["checkpoint"], max_steps=max_steps,
                                allow_descendant=allow_descendant)
-    data = dataset_snapshot(data_dir)
+    compact = manifest.get('compact_training')
+    if compact is not None:
+        require((Path(data_dir) / 'compact_train.json').is_file(), 'Missing compact training descriptor')
+        require(compact['start_step'] <= ckpt['global_step'] <= compact['end_step'],
+                'Checkpoint lies outside compact training coverage')
+        require(compact['sampler_seed'] == lookup(manifest['checkpoint']['scientific_config'], 'seed'),
+                'Compact sampler seed differs from original Lightning seed')
+    data = dataset_snapshot(data_dir, manifest.get('compact_training'), manifest['datasets']['train'])
     for split in CACHE_NAMES:
         require(data[split] == manifest["datasets"][split],
                 f"Transferred {split} cache differs from manifest (metadata/shards/rows)")
@@ -409,15 +427,22 @@ def verify_transfer(checkpoint, data_dir, manifest, max_steps, cpu_only=False,
                 f"Only {output_storage['free_gib']:.1f} GiB free near output directory "
                 f"{output_storage['requested_path']}; keep at least 15 GiB available "
                 "for periodic full-state checkpoints")
+    logical_gib = sum(item['size_bytes'] for item in data.values()) / 2**30
+    stored_gib = ((sum(v['size_bytes'] for v in compact['files'].values())
+                   + data['validation']['size_bytes']) / 2**30
+                  if compact is not None else logical_gib)
     result = {
         "status": "PASS", "global_step": ckpt["global_step"],
         "max_steps": max_steps, "remaining_steps": max_steps - ckpt["global_step"],
         "dataset_rows": {key: item["num_rows"] for key, item in data.items()},
-        "dataset_gib": sum(item["size_bytes"] for item in data.values()) / 2**30,
+        "dataset_gib": stored_gib,
+        "original_dataset_gib": logical_gib,
         "free_gib_near_checkpoint": free_gib,
         "output_storage": output_storage,
         "runtime_packages": packages,
         "runtime_python": {"version": sys.version, "executable": sys.executable},
+        "compact_training": compact,
+        "physical_dataset_gib": stored_gib,
         "checkpoint_verification": ("EXACT SOURCE TRANSFER" if ckpt["sha256"] ==
                                     manifest["checkpoint"]["sha256"] else
                                     "TRUSTED NEWER LOCAL CHECKPOINT; scientific config matched"),

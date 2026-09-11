@@ -185,5 +185,6 @@ logs/
 
 # Cloud transfers/environments are not source artifacts.
 /imports/
+/exports/
 *.ckpt
 *.arrow
