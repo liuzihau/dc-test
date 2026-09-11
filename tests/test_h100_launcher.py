@@ -32,6 +32,8 @@ with open(os.environ['CALLS'], 'a') as handle:
                 if k.startswith('DCACHE_') or k in ('TMPDIR', 'CUDA_VISIBLE_DEVICES')}}) + '\\n')
 if kind == 'python' and sys.argv[1:2] == ['-c']:
     print(1 if 'torch.cuda.device_count()' in sys.argv[2] else 1500)
+if kind == 'python' and sys.argv[1:2] == ['scripts/cloud/select_recovery.py']:
+    print(os.environ.get('FAKE_SELECTION', sys.argv[sys.argv.index('--source') + 1]))
 if kind == 'tmux' and 'has-session' in sys.argv:
     sys.exit(1)
 if kind == 'conda':
@@ -254,7 +256,8 @@ def test_invalid_workers_fails_before_launch(cloud):
 
 
 @pytest.mark.parametrize('micro', [2, 4, 8, 16])
-def test_actual_launcher_chain_composes_the_verified_scientific_recipe(cloud, micro):
+@pytest.mark.parametrize('recovery', ['0', '1'])
+def test_actual_launcher_chain_composes_the_verified_scientific_recipe(cloud, micro, recovery):
     from hydra import compose, initialize_config_dir
     from omegaconf import OmegaConf
     from checkpoint_resume import batch_geometry
@@ -270,7 +273,8 @@ def test_actual_launcher_chain_composes_the_verified_scientific_recipe(cloud, mi
         shutil.copyfile(repo / 'scripts/train' / name, scripts / name)
     # Run the real shell wrapper chain, but keep all Python/GPU calls mocked.
     (root / 'fakebin/bash').unlink()
-    result, calls = run('train', DCACHE_PREFLIGHT_ONLY='0', DCACHE_MICRO_BATCH=str(micro))
+    result, calls = run('train', DCACHE_PREFLIGHT_ONLY='0', DCACHE_MICRO_BATCH=str(micro),
+                        DCACHE_RECOVERY_ENABLED=recovery)
     assert result.returncode == 0, result.stdout + result.stderr
     command = next(item['args'] for item in calls if item['args'][:2] == ['-u', 'main.py'])
     for name, resolver in (
@@ -290,7 +294,8 @@ def test_actual_launcher_chain_composes_the_verified_scientific_recipe(cloud, mi
     assert config.loader.eval_batch_size == 2
     assert config.trainer.limit_val_batches == 200
     assert config.callbacks.checkpoint_every_n_steps.every_n_train_steps == 500
-    assert config.callbacks.checkpoint_every_n_steps.save_top_k == 3
+    assert config.callbacks.checkpoint_every_n_steps.save_top_k == (0 if recovery == '1' else 3)
+    assert config.checkpointing.recovery.enabled == (recovery == '1')
     assert config.checkpointing.allow_batch_geometry_change
     assert config.checkpointing.resume_from_ckpt
     assert config.trainer.max_steps == 5000
@@ -318,3 +323,21 @@ def test_unsupported_cloud_microbatch_rejected(cloud, micro):
     result, calls = run('train', DCACHE_MICRO_BATCH=micro)
     assert result.returncode == 2
     assert not calls
+
+
+def test_recovery_complete_does_not_launch_or_validate(cloud):
+    _, run = cloud
+    result, calls = run('train', DCACHE_RECOVERY_ENABLED='1', FAKE_SELECTION='DONE')
+    assert result.returncode == 0
+    assert len(calls) == 1
+    assert 'already complete' in result.stdout
+
+
+def test_arm_persists_source_and_manifest_without_training(cloud):
+    root, run = cloud
+    result, calls = run('arm', DCACHE_MICRO_BATCH='8')
+    assert result.returncode == 0
+    assert len(calls) == 1
+    assert calls[0]['args'][:2] == ['scripts/cloud/supervise_training.py', 'configure']
+    assert calls[0]['env']['DCACHE_RESUME_CKPT'] == str(root / 'imports/adjacent/0-1500.ckpt')
+    assert calls[0]['env']['DCACHE_MICRO_BATCH'] == '8'

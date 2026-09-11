@@ -167,6 +167,16 @@ def _train(config, logger, tokenizer):
     for _, callback in config.callbacks.items():
       callbacks.append(hydra.utils.instantiate(callback))
 
+  if config.checkpointing.get('recovery', {}).get('enabled', False):
+    from recovery_training import RecoveryCheckpoint
+    callbacks.append(RecoveryCheckpoint(
+      os.path.join(config.checkpointing.save_dir, 'checkpoints'),
+      every_seconds=config.checkpointing.recovery.every_seconds))
+    csv_logger = L.pytorch.loggers.CSVLogger(
+      save_dir=os.path.join(config.checkpointing.save_dir, 'run'),
+      name='lightning_logs', flush_logs_every_n_steps=10)
+    wandb_logger = [csv_logger, wandb_logger] if wandb_logger is not None else csv_logger
+
   train_ds, valid_ds = dataloader.get_dataloaders(
     config, tokenizer)
   _print_batch(train_ds, valid_ds, tokenizer)

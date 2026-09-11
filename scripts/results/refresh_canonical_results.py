@@ -7,9 +7,11 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 DEFAULT_MANIFEST = REPO_ROOT / 'experiments' / 'canonical_runs.json'
 DEFAULT_OUTPUT = REPO_ROOT / 'results' / 'generated'
 MPL_CACHE = REPO_ROOT / '.cache' / 'matplotlib'
@@ -145,19 +147,8 @@ def metric_series(frame, metric):
 
 
 def load_metrics(run_path):
-  import pandas as pd
-
-  files = sorted(resolve(run_path).rglob('metrics.csv'),
-                 key=lambda path: path.stat().st_mtime)
-  if not files:
-    raise FileNotFoundError(f'No metrics.csv under {resolve(run_path)}')
-  frames = []
-  for file_index, path in enumerate(files):
-    frame = pd.read_csv(path)
-    frame['_file_index'] = file_index
-    frame['_row_index'] = range(len(frame))
-    frames.append(frame)
-  return pd.concat(frames, ignore_index=True, sort=False)
+  from metrics_history import load_history
+  return load_history(resolve(run_path))
 
 
 def append_validation_supplement(frame, run):
@@ -328,6 +319,14 @@ def main():
   write_status_table(
     manifest, runs,
     output_root / 'tables' / 'training' / 'canonical_status.csv')
+  for run_id, run in runs.items():
+    history = load_metrics(run['path'])
+    if not history.empty:
+      # Raw CSVs remain untouched. Publish a convenient, lineage-filtered view.
+      history.sort_values(['step', '_file_index', '_row_index']).drop(
+        columns=['_file_index', '_row_index', '_source_csv'], errors='ignore').groupby(
+        'step', as_index=False).last().to_csv(
+          output_root / 'tables' / 'training' / f'{run_id}_metrics_merged.csv', index=False)
   if not args.training_only:
     copy_curated_evidence(output_root)
   print(f'Refreshed canonical results under {output_root}')

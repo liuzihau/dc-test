@@ -83,6 +83,42 @@ shuffled-cache identity comparison group changes with the training microbatch.
 Separate default output directories ending in `-h100-mb4`, `-h100-mb8` or `-h100-mb16` keep
 these trials distinct. Run smoke on the target GPU before full training.
 
+### Restart-safe cloud training
+
+Keep the same checkpoint/data/manifest/microbatch/**run directory** exports as
+your current cloud trial. After syncing all new source files and stopping any
+previous GPU job, enable local-disk recovery:
+
+```bash
+export DCACHE_RECOVERY_ENABLED=1
+export DCACHE_RECOVERY_SECONDS=1200
+bash scripts/cloud/lightning_h100.sh smoke &&
+bash scripts/cloud/lightning_h100.sh arm &&
+bash scripts/cloud/vast_onstart.sh
+```
+
+`arm` persists the launch settings; `vast_onstart.sh` starts the guarded
+background supervisor. **Also add** `bash /workspace/dc-test/scripts/cloud/vast_onstart.sh`
+to your Vast template's existing startup/onstart hook (adjust the repo path).
+Do not replace the template's other SSH/Jupyter startup commands. This manual
+registration is required for reboot recovery; running it once is not registration.
+
+Recovery saves at the next completed optimizer update after roughly 20 minutes,
+also at 500-step boundaries, and after final validation. It rotates three new
+recovery checkpoints, verifies restart candidates and falls back if needed.
+Old periodic/imported checkpoints are not deleted. Validation stays every 500
+optimizer steps. Retries are bounded; disk-full, OOM and configuration errors
+stop for inspection. The host/GPU must actually return, and its disk must survive;
+no off-machine backup or automatic instance rental is configured.
+
+Logs: `logs/recovery-supervisor.log`, and `<RUN_DIR>/supervisor_status.json`.
+Plot as usual with `bash scripts/cloud/lightning_h100.sh plot`. Restart-aware
+plots discard abandoned loss tails using per-attempt resume metadata, retaining
+raw CSVs. Merged CSVs are also written under `results/generated/tables/training/`.
+
+See [the recovery work note](RESEARCH_EXPERIMENT_LOG.md#restart-safe-cloud-recovery)
+for guarantees, limitations and verification.
+
 ### Local plots and trials
 
 For a space-limited cloud continuation, use the **compact 1500→5000 bundle**;

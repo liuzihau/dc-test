@@ -5,6 +5,8 @@ import argparse
 import os
 from pathlib import Path
 import tempfile
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault(
   'MPLCONFIGDIR', str(Path(tempfile.gettempdir()) / 'dcache-matplotlib'))
@@ -28,13 +30,8 @@ def find_metric_files(path_string):
 
 
 def load_metrics(path_string):
-  frames = []
-  for file_index, path in enumerate(find_metric_files(path_string)):
-    frame = pd.read_csv(path)
-    frame['_file_index'] = file_index
-    frame['_row_index'] = range(len(frame))
-    frames.append(frame)
-  return pd.concat(frames, ignore_index=True, sort=False)
+  from metrics_history import load_history
+  return load_history(path_string)
 
 
 def append_metric_points(frame, path_string, step_column, metric_column,

@@ -9,7 +9,7 @@ cd "$REPO_DIR"
 
 usage() {
   echo "Usage: bash scripts/cloud/lightning_h100.sh ACTION [--cpu-only]"
-  echo "Actions: setup | check | smoke | train | tmux | validate | plot"
+  echo "Actions: setup | check | smoke | train | tmux | validate | plot | arm | watch"
   echo "Default: one visible H100 (GPU 0), microbatch 2, global batch 512, stop at 5000."
   echo "Copy imports/adjacent/0-1500.ckpt and both prepared OWT .dat directories first."
   echo "Setup installs into the active Python environment (CPython 3.9-3.12); no conda create."
@@ -83,6 +83,13 @@ export DCACHE_VAL_INTERVAL=500
 export DCACHE_VAL_BATCHES=200
 export DCACHE_SANITY_VAL_STEPS=0
 export DCACHE_CHECKPOINT_SAVE_TOP_K=3
+export DCACHE_RECOVERY_ENABLED="${DCACHE_RECOVERY_ENABLED:-0}"
+export DCACHE_RECOVERY_SECONDS="${DCACHE_RECOVERY_SECONDS:-1200}"
+if [[ "$DCACHE_RECOVERY_ENABLED" != 0 && "$DCACHE_RECOVERY_ENABLED" != 1 ]] || \
+   [[ ! "$DCACHE_RECOVERY_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Recovery requires DCACHE_RECOVERY_ENABLED=0/1 and positive DCACHE_RECOVERY_SECONDS." >&2
+  exit 2
+fi
 export DCACHE_DATA_DIR="${DCACHE_DATA_DIR:-${REPO_DIR}/.cache/huggingface}"
 DEFAULT_RUN_DIR="${REPO_DIR}/outputs/owt-dcache-final-state-adjacent-pretrain-5k-2x3090"
 if [[ "$DCACHE_MICRO_BATCH" != 2 ]]; then
@@ -130,6 +137,17 @@ if [[ ! "$DCACHE_MAX_STEPS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 case "$ACTION" in
+  arm)
+    DCACHE_RESUME_CKPT="$SOURCE_CHECKPOINT" DCACHE_TRANSFER_MANIFEST="$MANIFEST" \
+      "$DCACHE_PYTHON" scripts/cloud/supervise_training.py configure \
+      --repo "$REPO_DIR" --config "$REPO_DIR/.cache/recovery/launch.json"
+    echo "Start now / invoke from existing Vast startup hook: bash $REPO_DIR/scripts/cloud/vast_onstart.sh"
+    exit 0
+    ;;
+  watch)
+    exec "$DCACHE_PYTHON" scripts/cloud/supervise_training.py run \
+      --config "$REPO_DIR/.cache/recovery/launch.json"
+    ;;
   plot)
     exec "$DCACHE_PYTHON" scripts/results/refresh_canonical_results.py \
       --available-only --training-only \
@@ -142,7 +160,16 @@ esac
 # Continue cloud progress on reruns. An incomplete/broken last.ckpt is an error,
 # never a reason to silently restart from the original imported checkpoint.
 LAST_CHECKPOINT="${DCACHE_RUN_DIR}/checkpoints/last.ckpt"
-if [[ -e "$LAST_CHECKPOINT" || -L "$LAST_CHECKPOINT" ]]; then
+if [[ "$DCACHE_RECOVERY_ENABLED" == 1 && "$ACTION" != validate ]]; then
+  CHECKPOINT="$("$DCACHE_PYTHON" scripts/cloud/select_recovery.py \
+    --directory "$DCACHE_RUN_DIR/checkpoints" --source "$SOURCE_CHECKPOINT" \
+    --manifest "$MANIFEST" --target "$DCACHE_MAX_STEPS")"
+  if [[ "$CHECKPOINT" == DONE ]]; then
+    echo "Training target already complete; nothing to restart."
+    exit 0
+  fi
+  TRUSTED_DESCENDANT=true
+elif [[ -e "$LAST_CHECKPOINT" || -L "$LAST_CHECKPOINT" ]]; then
   CHECKPOINT="$LAST_CHECKPOINT"
   TRUSTED_DESCENDANT=true
 else
@@ -188,7 +215,7 @@ case "$ACTION" in
     else
       # An existing tmux server can retain an older environment. Pass user
       # overrides explicitly instead of relying on that server's environment.
-      printf -v TMUX_COMMAND 'env %q %q %q %q %q %q %q %q %q %q bash %q train' \
+      printf -v TMUX_COMMAND 'env %q %q %q %q %q %q %q %q %q %q %q %q bash %q train' \
         "DCACHE_PYTHON=$DCACHE_PYTHON" \
         "DCACHE_RESUME_CKPT=$SOURCE_CHECKPOINT" \
         "DCACHE_TRANSFER_MANIFEST=$MANIFEST" \
@@ -199,6 +226,8 @@ case "$ACTION" in
         "DCACHE_NUM_WORKERS=$DCACHE_NUM_WORKERS" \
         "DCACHE_CPU_THREADS=$OMP_NUM_THREADS" \
         "DCACHE_MICRO_BATCH=$DCACHE_MICRO_BATCH" \
+        "DCACHE_RECOVERY_ENABLED=$DCACHE_RECOVERY_ENABLED" \
+        "DCACHE_RECOVERY_SECONDS=$DCACHE_RECOVERY_SECONDS" \
         "${SCRIPT_DIR}/lightning_h100.sh"
       tmux -S "$SOCKET" new-session -d -s dcache-h100 -c "$REPO_DIR" "$TMUX_COMMAND"
     fi
@@ -233,6 +262,13 @@ case "$ACTION" in
 esac
 
 mkdir -p "$DCACHE_RUN_DIR"
+RECOVERY_OVERRIDES=()
+if [[ "$DCACHE_RECOVERY_ENABLED" == 1 ]]; then
+  RECOVERY_OVERRIDES=(checkpointing.recovery.enabled=true
+    "checkpointing.recovery.every_seconds=$DCACHE_RECOVERY_SECONDS"
+    callbacks.checkpoint_every_n_steps.save_top_k=0
+    callbacks.checkpoint_every_n_steps.save_last=false)
+fi
 # Preserve the imported checkpoint separately; normal cloud checkpoint
 # retention manages only the latest three new periodic checkpoints.
 echo "Resume source: $CHECKPOINT"
@@ -254,6 +290,7 @@ fi
     checkpointing.resume_ckpt_path="$CHECKPOINT" \
     checkpointing.allow_batch_geometry_change=true \
     loader.eval_batch_size=2 \
-    "${EXTRA_OVERRIDES[@]}"
+    "${EXTRA_OVERRIDES[@]}" \
+    "${RECOVERY_OVERRIDES[@]}"
 ) 9>"${DCACHE_RUN_DIR}/.training.lock" 2>&1 | tee "$LOG_FILE"
 echo "${ACTION} completed; log: ${LOG_FILE}"
