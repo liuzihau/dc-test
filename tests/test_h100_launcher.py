@@ -253,7 +253,7 @@ def test_invalid_workers_fails_before_launch(cloud):
     assert not calls
 
 
-@pytest.mark.parametrize('micro', [2, 4])
+@pytest.mark.parametrize('micro', [2, 4, 8, 16])
 def test_actual_launcher_chain_composes_the_verified_scientific_recipe(cloud, micro):
     from hydra import compose, initialize_config_dir
     from omegaconf import OmegaConf
@@ -296,22 +296,23 @@ def test_actual_launcher_chain_composes_the_verified_scientific_recipe(cloud, mi
     assert config.trainer.max_steps == 5000
 
 
-def test_mb4_tmux(cloud):
+@pytest.mark.parametrize('micro', ['4', '8', '16'])
+def test_mb_tmux(cloud, micro):
     root, run = cloud
-    result, calls = run('smoke', DCACHE_MICRO_BATCH='4')
+    result, calls = run('smoke', DCACHE_MICRO_BATCH=micro)
     assert result.returncode == 0, result.stderr
     launch = next(item for item in calls if item['kind'] == 'bash')
-    assert launch['env']['DCACHE_MICRO_BATCH'] == '4'
+    assert launch['env']['DCACHE_MICRO_BATCH'] == micro
     assert launch['env']['DCACHE_MAX_STEPS'] == '1501'
     assert 'loader.eval_batch_size=2' in launch['args']
-    result, calls = run('tmux', DCACHE_MICRO_BATCH='4')
+    result, calls = run('tmux', DCACHE_MICRO_BATCH=micro)
     assert result.returncode == 0, result.stderr
     command = next(item for item in calls if item['kind'] == 'tmux' and 'new-session' in item['args'])['args'][-1]
-    assert 'DCACHE_MICRO_BATCH=4' in command
-    assert 'pretrain-5k-h100-mb4' in command
+    assert f'DCACHE_MICRO_BATCH={micro}' in command
+    assert f'pretrain-5k-h100-mb{micro}' in command
 
 
-@pytest.mark.parametrize('micro', ['0', '3', '8', 'oops'])
+@pytest.mark.parametrize('micro', ['0', '3', '32', 'oops'])
 def test_unsupported_cloud_microbatch_rejected(cloud, micro):
     _, run = cloud
     result, calls = run('train', DCACHE_MICRO_BATCH=micro)

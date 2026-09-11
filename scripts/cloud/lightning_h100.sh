@@ -15,6 +15,7 @@ usage() {
   echo "Setup installs into the active Python environment (CPython 3.9-3.12); no conda create."
   echo "Environment overrides: DCACHE_PYTHON, DCACHE_RESUME_CKPT, DCACHE_DATA_DIR,"
   echo "  DCACHE_RUN_DIR, DCACHE_CUDA_VISIBLE_DEVICES, DCACHE_NUM_WORKERS."
+  echo "  DCACHE_MICRO_BATCH=4, 8 or 16 enables a separately labelled trial (default: 2)."
 }
 
 ACTION="${1:-help}"
@@ -67,19 +68,28 @@ fi
 export DCACHE_CUDA_VISIBLE_DEVICES="${DCACHE_CUDA_VISIBLE_DEVICES:-0}"
 export CUDA_VISIBLE_DEVICES="$DCACHE_CUDA_VISIBLE_DEVICES"
 export DCACHE_DEVICES=1
-# Keeping microbatch 2 also preserves the identity-reference group size.
-export DCACHE_MICRO_BATCH=2
+# Larger microbatches are explicit trials: they change the identity-reference group.
+export DCACHE_MICRO_BATCH="${DCACHE_MICRO_BATCH:-2}"
+if [[ "$DCACHE_MICRO_BATCH" != 2 && "$DCACHE_MICRO_BATCH" != 4 && "$DCACHE_MICRO_BATCH" != 8 && "$DCACHE_MICRO_BATCH" != 16 ]]; then
+  echo "DCACHE_MICRO_BATCH must be 2 (reference), 4, 8 or 16 (explicit trials)." >&2
+  exit 2
+fi
 export DCACHE_GLOBAL_BATCH=512
 export DCACHE_MAX_STEPS="${DCACHE_MAX_STEPS:-5000}"
 export DCACHE_NUM_WORKERS="${DCACHE_NUM_WORKERS:-4}"
 export DCACHE_VAL_INTERVAL=500
 # Original: 2 ranks * 2 examples * 100 batches = 400 examples.
-# One rank keeps microbatch 2 and evaluates 200 batches instead.
+# Validation stays at microbatch 2 / 200 batches for all training microbatches.
 export DCACHE_VAL_BATCHES=200
 export DCACHE_SANITY_VAL_STEPS=0
 export DCACHE_CHECKPOINT_SAVE_TOP_K=3
 export DCACHE_DATA_DIR="${DCACHE_DATA_DIR:-${REPO_DIR}/.cache/huggingface}"
-export DCACHE_RUN_DIR="${DCACHE_RUN_DIR:-${REPO_DIR}/outputs/owt-dcache-final-state-adjacent-pretrain-5k-2x3090}"
+DEFAULT_RUN_DIR="${REPO_DIR}/outputs/owt-dcache-final-state-adjacent-pretrain-5k-2x3090"
+if [[ "$DCACHE_MICRO_BATCH" != 2 ]]; then
+  DEFAULT_RUN_DIR="${REPO_DIR}/outputs/owt-dcache-final-state-adjacent-pretrain-5k-h100-mb${DCACHE_MICRO_BATCH}"
+  echo "Microbatch-${DCACHE_MICRO_BATCH} trial: accumulation $((512 / DCACHE_MICRO_BATCH)); identity-reference groups now contain ${DCACHE_MICRO_BATCH} examples."
+fi
+export DCACHE_RUN_DIR="${DCACHE_RUN_DIR:-$DEFAULT_RUN_DIR}"
 SOURCE_CHECKPOINT="${DCACHE_RESUME_CKPT:-${REPO_DIR}/imports/adjacent/0-1500.ckpt}"
 MANIFEST="${DCACHE_TRANSFER_MANIFEST:-${REPO_DIR}/experiments/h100_transfer_manifest.json}"
 LAUNCHER="${REPO_DIR}/scripts/train/train_owt_dcache_final_state_adjacent_5k_2x3090.sh"
@@ -178,7 +188,7 @@ case "$ACTION" in
     else
       # An existing tmux server can retain an older environment. Pass user
       # overrides explicitly instead of relying on that server's environment.
-      printf -v TMUX_COMMAND 'env %q %q %q %q %q %q %q %q %q bash %q train' \
+      printf -v TMUX_COMMAND 'env %q %q %q %q %q %q %q %q %q %q bash %q train' \
         "DCACHE_PYTHON=$DCACHE_PYTHON" \
         "DCACHE_RESUME_CKPT=$SOURCE_CHECKPOINT" \
         "DCACHE_TRANSFER_MANIFEST=$MANIFEST" \
@@ -188,6 +198,7 @@ case "$ACTION" in
         "DCACHE_MAX_STEPS=$DCACHE_MAX_STEPS" \
         "DCACHE_NUM_WORKERS=$DCACHE_NUM_WORKERS" \
         "DCACHE_CPU_THREADS=$OMP_NUM_THREADS" \
+        "DCACHE_MICRO_BATCH=$DCACHE_MICRO_BATCH" \
         "${SCRIPT_DIR}/lightning_h100.sh"
       tmux -S "$SOCKET" new-session -d -s dcache-h100 -c "$REPO_DIR" "$TMUX_COMMAND"
     fi
@@ -206,7 +217,7 @@ case "$ACTION" in
       loader.num_workers="$DCACHE_NUM_WORKERS"
     ;;
   smoke)
-    # A true resumed optimizer update (256 microbatches), plus validation and a
+    # A true resumed optimizer update (512 / microbatch batches), plus validation and a
     # checkpoint save. Never change or resume from the smoke output in training.
     STEP="$("$DCACHE_PYTHON" -c 'import sys, torch; c=torch.load(sys.argv[1], map_location="cpu", weights_only=False, mmap=True); print(c["global_step"])' "$CHECKPOINT")"
     export DCACHE_MAX_STEPS=$(( STEP + 1 ))
@@ -225,7 +236,7 @@ mkdir -p "$DCACHE_RUN_DIR"
 # Preserve the imported checkpoint separately; normal cloud checkpoint
 # retention manages only the latest three new periodic checkpoints.
 echo "Resume source: $CHECKPOINT"
-echo "Global batch 512 = 1 GPU x microbatch 2 x accumulation 256."
+echo "Global batch 512 = 1 GPU x microbatch $DCACHE_MICRO_BATCH x accumulation $((512 / DCACHE_MICRO_BATCH))."
 echo "Training stops at optimizer step $DCACHE_MAX_STEPS (not that many additional steps)."
 echo "Managed runtime cache: $TMPDIR"
 echo "Validation uses 400 examples every 500 updates in the full run."
@@ -242,6 +253,7 @@ fi
     checkpointing.resume_from_ckpt=true \
     checkpointing.resume_ckpt_path="$CHECKPOINT" \
     checkpointing.allow_batch_geometry_change=true \
+    loader.eval_batch_size=2 \
     "${EXTRA_OVERRIDES[@]}"
 ) 9>"${DCACHE_RUN_DIR}/.training.lock" 2>&1 | tee "$LOG_FILE"
 echo "${ACTION} completed; log: ${LOG_FILE}"
