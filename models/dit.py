@@ -1,5 +1,6 @@
 import math
 import typing
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 import einops
@@ -485,7 +486,8 @@ class DDiTBlock(nn.Module):
                step_memory_enabled=False, dc_spatial_rope_dim=None,
                dc_temporal_rope_dim=None,
                step_memory_gate_enabled=False,
-               step_memory_gate_init=0.1):
+               step_memory_gate_init=0.1, attention_mode='separate',
+               current_only_merged=False, merged_policy='legacy'):
     super().__init__()
     self.max_seqlen = max_seqlen
     self.n = n
@@ -502,6 +504,18 @@ class DDiTBlock(nn.Module):
     # The denoising branch is a complete second attention sublayer. Its
     # projections and normalization are independent of normal BD3 attention.
     self.step_memory_enabled = step_memory_enabled
+    if attention_mode not in {'separate', 'merged'}:
+      raise ValueError('Unknown step-memory attention_mode')
+    if attention_mode == 'merged' and not step_memory_enabled and not current_only_merged:
+      raise ValueError('Merged attention requires step memory enabled')
+    self.attention_mode = attention_mode
+    if merged_policy not in {'legacy', 'current_preserving'}:
+      raise ValueError('Unknown step-memory merged_policy')
+    if merged_policy == 'current_preserving' and (
+        attention_mode != 'merged' or step_memory_gate_enabled):
+      raise ValueError(
+        'current_preserving requires merged attention with the previous-V gate disabled')
+    self.merged_policy = merged_policy
     self.dc_norm = None
     self.dc_qkv = None
     self.dc_attn_out = None
@@ -509,11 +523,12 @@ class DDiTBlock(nn.Module):
     self.dc_spatial_rope_dim = None
     self.dc_temporal_rope_dim = None
     self.step_memory_gate = None
-    if self.step_memory_enabled:
-      self.dc_norm = LayerNorm(dim)
-      self.dc_qkv = nn.Linear(dim, 3 * dim, bias=False)
-      self.dc_attn_out = nn.Linear(dim, dim, bias=False)
-      self.dc_dropout = nn.Dropout(dropout)
+    if self.step_memory_enabled or (attention_mode == 'merged' and current_only_merged):
+      if self.attention_mode == 'separate':
+        self.dc_norm = LayerNorm(dim)
+        self.dc_qkv = nn.Linear(dim, 3 * dim, bias=False)
+        self.dc_attn_out = nn.Linear(dim, dim, bias=False)
+        self.dc_dropout = nn.Dropout(dropout)
       head_dim = dim // n_heads
       if dc_temporal_rope_dim is None:
         dc_temporal_rope_dim = max(2, head_dim // 4)
@@ -526,7 +541,7 @@ class DDiTBlock(nn.Module):
         raise ValueError('Denoising RoPE dimensions must both be even')
       self.dc_spatial_rope_dim = dc_spatial_rope_dim
       self.dc_temporal_rope_dim = dc_temporal_rope_dim
-      if step_memory_gate_enabled:
+      if step_memory_gate_enabled and self.step_memory_enabled:
         if not -1.0 < step_memory_gate_init < 1.0:
           raise ValueError('Step-memory gate initialization must be in (-1, 1)')
         raw_gate = math.atanh(float(step_memory_gate_init))
@@ -640,6 +655,72 @@ class DDiTBlock(nn.Module):
     return rearrange(
       qkv, 'b g s (three h d) -> (b g) h three s d',
       three=3, h=self.n_heads)
+
+  def merged_attention(self, hidden, previous_step_kv, detach_cache_backbone,
+                       source_mask, shift=None, scale=None,
+                       key_valid=None, previous_key_valid=None):
+    """One joint softmax; raw shifted cache uses the normal QKV projection.
+
+    Temporal positions are previous=0/current=1, as in the legacy DC branch;
+    they encode relative iteration age, NOT the continuous noise level.
+    In the legacy policy the optional gate scales previous V only, never the
+    full residual. current_preserving has no such gate and forbids cache-only
+    queries; current-only queries still remove previous keys before softmax.
+    """
+    batch, length, dim = hidden.shape
+    def project(value):
+      value = self.norm1(value)
+      if shift is not None:
+        value = modulate_fused(value, shift, scale)
+      return rearrange(self.attn_qkv(value),
+                       'b s (three h d) -> b h three s d',
+                       three=3, h=self.n_heads)
+
+    qkv = project(hidden)
+    raw = project(hidden.detach()) if detach_cache_backbone else qkv
+    entry = torch.stack((raw[:, :, 1], raw[:, :, 2]), dim=2)
+    entry = rearrange(entry, 'b h two s d -> b s two h d')
+    positions = torch.arange(length, device=hidden.device)
+    q = apply_denoising_rope_2d(qkv[:, :, 0], positions, 1, self.dc_spatial_rope_dim)
+    k = apply_denoising_rope_2d(qkv[:, :, 1], positions, 1, self.dc_spatial_rope_dim)
+    v = qkv[:, :, 2]
+    attention_mask = None
+    if previous_step_kv is not None:
+      if previous_step_kv.shape != entry.shape:
+        raise ValueError('Merged previous K/V must match [batch, sequence, 2, heads, head_dim]')
+      pk = apply_denoising_rope_2d(previous_step_kv[:, :, 0].transpose(1, 2),
+                                 positions, 0, self.dc_spatial_rope_dim)
+      pv = previous_step_kv[:, :, 1].transpose(1, 2)
+      if self.step_memory_gate is not None:
+        pv = torch.tanh(self.step_memory_gate) * pv
+      k, v = torch.cat((pk, k), dim=-2), torch.cat((pv, v), dim=-2)
+      if source_mask is not None:
+        if (source_mask.shape != (batch, length)
+            or source_mask.dtype not in {torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8}):
+          raise ValueError('Merged source mask requires integer [batch, sequence] modes 0/1/2')
+        invalid_source = (source_mask < 0) | (source_mask > 2)
+        if self.merged_policy == 'current_preserving':
+          invalid_source = invalid_source | source_mask.eq(1)
+        # One validation synchronization, including the new policy constraint.
+        if invalid_source.any():
+          if self.merged_policy == 'current_preserving':
+            raise ValueError('current_preserving forbids cache-only queries; use modes 0/2')
+          raise ValueError('Merged source mask requires integer [batch, sequence] modes 0/1/2')
+        attention_mask = torch.cat((
+          source_mask.ne(2)[:, :, None].expand(-1, -1, length),
+          source_mask.ne(1)[:, :, None].expand(-1, -1, length)), dim=-1)[:, None]
+    elif source_mask is not None:
+      raise ValueError('Source dropout requires a previous denoising cache')
+    if key_valid is not None:
+      valid = key_valid.bool()
+      if previous_step_kv is not None:
+        previous_valid = valid if previous_key_valid is None else previous_key_valid.bool()
+        valid = torch.cat((previous_valid, valid), dim=-1)
+      valid = valid[:, None, None, :]
+      attention_mask = valid if attention_mask is None else attention_mask & valid
+    attended = F.scaled_dot_product_attention(q, k, v, attn_mask=attention_mask,
+                                             dropout_p=0.0, is_causal=False)
+    return rearrange(attended, 'b h s d -> b s (h d)'), entry
 
   def _write_denoising_kv(self, hidden, detach_backbone=False):
     """Write raw K/V while optionally truncating gradients at the hidden state.
@@ -801,7 +882,8 @@ class DDiTBlock(nn.Module):
               previous_step_kv=None,
               return_step_kv=False,
               detach_cache_backbone=False,
-              step_memory_source_mask=None):
+              step_memory_source_mask=None, key_valid=None,
+              previous_key_valid=None):
     batch_size, seq_len = x.shape[0], x.shape[1]
 
     shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = None, None, None, None, None, None
@@ -813,6 +895,19 @@ class DDiTBlock(nn.Module):
       scale_mlp, gate_mlp) = rearrange(
         self.adaLN_modulation(c), '(b h) d -> b h d', b=batch_size
         ).chunk(6, dim=-1)
+
+    if self.attention_mode == 'merged':
+      if (causal or mask is not None or store_kv or self.kv_cache is not None
+          or (seq_len != self.block_size and key_valid is None)
+          or self.attn_backend != 'sdpa'):
+        raise ValueError('Merged attention currently requires full-sequence noncausal SDPA without prefix caching')
+      attended, entry_step_kv = self.merged_attention(
+        x, previous_step_kv, detach_cache_backbone,
+        step_memory_source_mask, shift_msa, scale_msa,
+        key_valid=key_valid, previous_key_valid=previous_key_valid)
+      x = self.attention_residual(attended, c, gate_msa, x)
+      x = self.mlp_residual(x, c, gate_mlp, shift_mlp, scale_mlp)
+      return (x, entry_step_kv) if return_step_kv else x
 
     # Diagonal recurrent memory is the first sublayer. At layer l it reads
     # M_{l+1} from the previous denoising forward, then ordinary BD3 attention
@@ -854,7 +949,11 @@ class DDiTBlock(nn.Module):
     elif self.attn_backend == 'flex' and FLEX_ATTN_AVAILABLE:
       x = self.cross_attn_flex(qkv, mask=mask)
     elif self.attn_backend == 'sdpa':
-      x = self.cross_attn(qkv, mask=mask)
+      sdpa_mask = mask
+      if key_valid is not None:
+        valid = key_valid[:, None, None, :].bool()
+        sdpa_mask = valid if mask is None else mask.bool() & valid
+      x = self.cross_attn(qkv, mask=sdpa_mask)
     else:
       raise ValueError('Unknown attention backend')
     if self.kv_cache is not None:
@@ -932,7 +1031,9 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
       config = omegaconf.OmegaConf.create(config)
     self.causal = getattr(config.model, 'causal_attention', config.algo.parameterization == 'ar')
     self.n = config.model.length
-    self.adaLN = not self.causal or getattr(config.model, 'adaln', False)
+    self.no_time_conditioning = bool(getattr(config.model, 'no_time_conditioning', False))
+    self.adaLN = (not self.no_time_conditioning and
+                  (not self.causal or getattr(config.model, 'adaln', False)))
     self.config = config
     self.vocab_size = vocab_size
     self.block_size = config.block_size
@@ -942,7 +1043,7 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     self.vocab_embed = EmbeddingLayer(dim, vocab_size)
     if self.adaLN == True:
       self.sigma_map = TimestepEmbedder(cond_dim)
-    if not self.causal:
+    if not self.causal and not self.no_time_conditioning:
       self.sigma_map = TimestepEmbedder(cond_dim)
     self.rotary_emb = Rotary(dim // config.model.n_heads)
     self.attn_backend = getattr(config.model, 'attn_backend', 'flash_attn')
@@ -950,6 +1051,16 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     step_memory_config = getattr(config, 'step_memory', {})
     step_memory_enabled = bool(
       getattr(step_memory_config, 'enabled', False))
+    attention_mode = getattr(step_memory_config, 'attention_mode', 'separate')
+    merged_policy = getattr(step_memory_config, 'merged_policy', 'legacy')
+    current_only_merged = bool(getattr(step_memory_config, 'current_only_merged', False))
+    if attention_mode not in {'separate', 'merged'}:
+      raise ValueError('Unknown step-memory attention_mode')
+    if attention_mode == 'merged' and (
+        (not step_memory_enabled and not current_only_merged) or self.causal or config.algo.cross_attn
+        or self.block_size != self.n or self.attn_backend != 'sdpa'
+        or config.sampling.kv_cache):
+      raise ValueError('Merged attention requires full-sequence MDLM, enabled step memory, SDPA and no prefix cache')
     dc_spatial_rope_dim = int(getattr(
       step_memory_config, 'spatial_rope_dim',
       (dim // self.n_heads) * 3 // 4))
@@ -966,6 +1077,17 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     gate_config = getattr(step_memory_config, 'gate', {})
     step_memory_gate_enabled = bool(getattr(gate_config, 'enabled', False))
     step_memory_gate_init = float(getattr(gate_config, 'init', 0.1))
+    if merged_policy not in {'legacy', 'current_preserving'}:
+      raise ValueError('Unknown step-memory merged_policy')
+    if merged_policy == 'current_preserving':
+      if attention_mode != 'merged' or step_memory_gate_enabled:
+        raise ValueError(
+          'current_preserving requires merged attention with the previous-V gate disabled')
+      source_config = getattr(
+        getattr(step_memory_config, 'pretrain', {}), 'source_dropout', {})
+      if (bool(getattr(source_config, 'enabled', False))
+          and float(getattr(source_config, 'cache_only_probability', 0.0)) != 0.0):
+        raise ValueError('current_preserving requires cache_only_probability=0')
     dcachehooping_config = getattr(config, 'dcachehooping', {})
     self.dcachehooping_enabled = bool(getattr(
       dcachehooping_config, 'enabled', False))
@@ -1032,6 +1154,9 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
           dc_temporal_rope_dim=dc_temporal_rope_dim,
           step_memory_gate_enabled=step_memory_gate_enabled,
           step_memory_gate_init=step_memory_gate_init,
+          attention_mode=attention_mode,
+          merged_policy=merged_policy,
+          current_only_merged=current_only_merged,
           max_seqlen=self.max_seqlen)
       blocks.append(block)
     self.blocks = nn.ModuleList(blocks)
@@ -1048,6 +1173,16 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
       tie_word_embeddings=config.model.tie_word_embeddings)
     if config.algo.cross_attn:
       self.gen_mask(config.model.length, self.block_size, self.attn_backend)
+    self.neighbor_heads = None
+    neighbor_config = getattr(config, 'neighbor_prediction', {})
+    if bool(getattr(neighbor_config, 'enabled', False)):
+      if attention_mode != 'merged':
+        raise ValueError('Neighbor prediction currently requires merged attention')
+      from neighbor_prediction import NeighborPredictionHeads
+      # Adding auxiliary heads must not shift initialization/training RNG for
+      # shared parameters or the trajectory. Disabled adds no state_dict keys.
+      with torch.random.fork_rng(devices=[]):
+        self.neighbor_heads = NeighborPredictionHeads(dim, vocab_size)
 
   def _get_bias_dropout_scale(self):
     if self.training:
@@ -1087,7 +1222,20 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
               step_memory_source_mask=None,
               previous_final_hidden=None, token_status=None,
               return_dcachehooping=False,
-              return_confidence_logits=False):
+              return_confidence_logits=False, return_hidden=False,
+              attention_mask=None, previous_attention_mask=None):
+    # Opt-in variable-length full-sequence SDPA path for symbolic reasoning.
+    # Existing OWT callers pass None and keep the original attention exactly.
+    if attention_mask is not None:
+      if (self.attn_backend != 'sdpa' or self.causal or self.config.algo.cross_attn
+          or store_kv or self.config.sampling.kv_cache):
+        raise ValueError('Padding masks currently require full-sequence noncausal SDPA')
+      if self.step_memory_enabled and self.blocks[0].attention_mode != 'merged':
+        raise ValueError('Padding masks with recurrent memory require merged attention')
+      if attention_mask.shape != indices.shape or not attention_mask.bool().any(-1).all():
+        raise ValueError('attention_mask must match tokens and contain a valid key per example')
+      if previous_attention_mask is not None and previous_attention_mask.shape != indices.shape:
+        raise ValueError('Previous attention mask must match current token shape')
     x = self.vocab_embed(indices)
     if (self.dcachehooping_two_forward_enabled
         and previous_final_hidden is None):
@@ -1127,6 +1275,8 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     if sigma is None:
       t_cond = None
     else:
+      if self.no_time_conditioning:
+        raise ValueError('This backbone was constructed without time conditioning')
       t_cond = F.silu(self.sigma_map(sigma))
 
     cross_attn = hasattr(self, 'block_diff_mask')
@@ -1166,7 +1316,8 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
       rotary_cos_sin = self.rotary_emb(x)
       mask = None
 
-    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+    with (nullcontext() if getattr(self.config.model, 'external_autocast', False)
+          else torch.amp.autocast('cuda', dtype=torch.bfloat16)):
       if return_step_kv and not self.step_memory_enabled:
         raise ValueError(
           'Cannot return denoising K/V while step memory is disabled')
@@ -1197,7 +1348,10 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
             previous_step_kv[i] if previous_step_kv is not None else None),
           return_step_kv=return_step_kv,
           detach_cache_backbone=detach_cache_backbone,
-          step_memory_source_mask=step_memory_source_mask)
+          step_memory_source_mask=step_memory_source_mask,
+          **({'key_valid': attention_mask,
+              'previous_key_valid': previous_attention_mask}
+             if attention_mask is not None else {}))
         if return_step_kv:
           x, entry_step_kv = block_output
           if i > 0:
@@ -1211,7 +1365,12 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
           detach_backbone=detach_cache_backbone))
         if len(next_step_kv) != len(self.blocks):
           raise RuntimeError('Shifted denoising cache mapping is incomplete')
+        if attention_mask is not None:
+          valid = attention_mask[:, :, None, None, None].bool()
+          next_step_kv = [entry.masked_fill(~valid, 0) for entry in next_step_kv]
       final_hidden = x
+      if attention_mask is not None:
+        final_hidden = final_hidden.masked_fill(~attention_mask.bool()[:, :, None], 0)
       confidence_logits = None
       if return_confidence_logits:
         confidence_logits = self.dcachehooping_confidence_head(
@@ -1222,7 +1381,7 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
       final_hidden = final_hidden[:, :self.n]
       if confidence_logits is not None:
         confidence_logits = confidence_logits[:, :self.n]
-    if return_dcachehooping:
+    if return_dcachehooping or return_hidden:
       return DcachehoopingBackboneOutput(
         logits=x,
         step_kv=next_step_kv,

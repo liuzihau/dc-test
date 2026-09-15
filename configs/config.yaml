@@ -37,6 +37,14 @@ sampling:
 # This is independent of sampling.kv_cache, which stores completed blocks.
 step_memory:
   enabled: False
+  # separate: legacy two sublayers; merged: one shared-QKV SDPA sublayer.
+  # Merged currently supports full-sequence MDLM only (no block prefix cache).
+  attention_mode: separate
+  # Explicit scientific recipe tag; missing in historical checkpoints = legacy.
+  # current_preserving (merged only): gate disabled, no cache-only queries.
+  # Launchers select the policy AND its settings; this tag never silently
+  # rewrites old checkpoint behavior or removes normal AdaLN residual gates.
+  merged_policy: legacy
   # Dedicated denoising attention uses 48 spatial and 16 temporal RoPE
   # dimensions for the 64-dimensional heads in model=small.
   spatial_rope_dim: 48
@@ -45,8 +53,9 @@ step_memory:
   # When true, truncate cross-forward gradients at the preceding backbone
   # hidden state while keeping the cache projection itself trainable.
   detach_between_steps: True
-  # Optional residual gate on each complete denoising-attention sublayer.
-  # DCache-v2 launchers enable it; false preserves v1 checkpoint structure.
+  # Separate: optional gate on the complete DC residual. Legacy merged:
+  # scales previous V only. current_preserving requires enabled=false so
+  # current and previous V enter the shared softmax without extra attenuation.
   gate:
     enabled: False
     init: 0.1
@@ -66,6 +75,7 @@ step_memory:
     teacher_token_probability: 1.0
     source_dropout:
       enabled: False
+      # current_preserving sets this to 0, keeping current K/V available.
       cache_only_probability: 0.20
       current_only_probability: 0.05
       warmup_steps: 1_000
@@ -129,6 +139,14 @@ dcachehooping:
     loss_weight: 0.30
   # On an identity batch, choose which recurrent source to contaminate.
   identity_final_probability: 0.50
+
+# Opt-in spatial marginal prediction; only merged-attention five-state runs.
+neighbor_prediction:
+  enabled: False
+  # 0.5 * (previous-direction mean CE + next-direction mean CE) / 2.
+  weight: 0.5
+  chunk_size: 128
+  checkpoint_chunks: True
 
 training:
   ema: 0.9999
@@ -208,6 +226,10 @@ checkpointing:
   # Opt-in DDP migration only: unchanged global batch, full optimizer boundary.
   # Rewrites loaded loop/sampler counters, never the source checkpoint file.
   allow_batch_geometry_change: false
+  # New full-data runs only: reset Lightning's live iterator to the completed
+  # DDP sample cursor, preserving the original permutation seed and geometry.
+  # Legacy behavior is unchanged unless opted in; compact resumes already reset.
+  restore_data_cursor: false
   recovery:
     enabled: false
     every_seconds: 1200

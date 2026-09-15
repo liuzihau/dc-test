@@ -52,6 +52,16 @@
       "validation_metric": "val/loss_t2",
       "color": "#d62728",
       "status": "running"
+    },
+    {
+      "id": "dcache_merged_final_state_adjacent_no_aux",
+      "label": "Merged DCache + final (1-hop, no aux)",
+      "role": "merged_attention_ablation",
+      "path": "outputs/owt-dcache-merged-final-state-adjacent-neighbors-off-3090-5k",
+      "train_metric": "trainer/loss_t2",
+      "validation_metric": "val/loss_t2",
+      "color": "#008b8b",
+      "status": "running"
     }
   ],
   "evaluations": [

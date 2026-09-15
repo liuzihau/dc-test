@@ -44,6 +44,17 @@ def fake_checkpoint(step=1500):
     }
 
 
+def test_default_merged_policy_does_not_change_historical_manifest():
+    original = fake_config()
+    explicit = copy.deepcopy(original)
+    explicit['step_memory']['merged_policy'] = 'legacy'
+    assert readiness.scientific_config(original) == readiness.scientific_config(explicit)
+    # The normalizer is not allowed to discard a real policy change.
+    explicit['step_memory']['merged_policy'] = 'current_preserving'
+    with pytest.raises(readiness.ReadinessError, match='legacy separate-attention'):
+        readiness.scientific_config(explicit)
+
+
 @pytest.fixture
 def transfer(tmp_path):
     checkpoint = tmp_path / "source.ckpt"

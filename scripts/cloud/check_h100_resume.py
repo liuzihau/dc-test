@@ -143,6 +143,10 @@ def json_hash(value):
 
 
 def scientific_config(config):
+    require(config.get('step_memory', {}).get('attention_mode', 'separate') == 'separate',
+            'This transfer manifest is for separate attention, not the merged architecture')
+    require(config.get('step_memory', {}).get('merged_policy', 'legacy') == 'legacy',
+            'This transfer manifest is for the legacy separate-attention policy')
     for key, expected in REQUIRED_CONFIG.items():
         actual = lookup(config, key)
         equal = actual == expected
@@ -155,6 +159,11 @@ def scientific_config(config):
             "seed", "diffusion", "block_size", "model", "algo", "noise",
             "step_memory", "dcachehooping", "training", "optim", "lr_scheduler")
     }
+    # Explicit legacy default is equivalent to historical checkpoints where
+    # this field did not yet exist. Never normalize away a different mode.
+    snapshot['step_memory'] = dict(snapshot['step_memory'])
+    snapshot['step_memory'].pop('attention_mode', None)
+    snapshot['step_memory'].pop('merged_policy', None)
     snapshot["data"] = {key: value for key, value in config["data"].items()
                         if key != "cache_dir"}
     snapshot["loader"] = {key: config["loader"][key] for key in (

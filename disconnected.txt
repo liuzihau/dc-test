@@ -1,0 +1,5 @@
+For a multi-day run the thing that helps most is making the job restartable instead of watchable. Save checkpoints on a wall clock timer (every 20 to 30 min) rather than at epoch boundaries, write them to a volume or sync them to cloud storage, and have the script load the newest checkpoint automatically when it starts.
+
+Then put the training launch in the instance's onstart script, so if the machine drops and comes back the run picks up on its own while you are away. Same idea for the data transfer: use a resumable tool (rsync or aria2c) so an interrupted download continues instead of restarting.
+
+On machine choice, filtering listings by reliability and by a max duration that covers your full run is the main lever available on a marketplace where hosts run their own hardware.  

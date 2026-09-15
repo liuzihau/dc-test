@@ -180,6 +180,30 @@ def test_main_plot_includes_all_runs_and_caps_display(
   assert not output.exists()
 
 
+@pytest.mark.parametrize('validation', ['present', 'missing'])
+def test_sixth_merged_no_aux_run_uses_registered_metrics_and_color(
+    refresh, workspace, saved_figures, validation):
+  manifest, runs = make_registry(workspace)
+  run = make_run(workspace, 'dcache_merged_final_state_adjacent_no_aux',
+                 ordinal=5, validation=validation)
+  run['color'] = '#008b8b'
+  runs[run['id']] = run
+  manifest['runs'].append(run)
+  refresh.run_plot(runs, workspace / 'six-trials.png', min_step=400)
+  train_axis, val_axis = saved_figures[0][1].axes
+  assert len(train_axis.lines) == 12
+  assert matching_lines(train_axis, run['label'])[0].get_color() == '#008b8b'
+  lines = matching_lines(val_axis, run['label'])
+  assert bool(lines) == (validation == 'present')
+  if lines:
+    assert lines[0].get_color() == '#008b8b'
+  refresh.write_status_table(manifest, runs, workspace / 'status.csv')
+  row = read_status(workspace / 'status.csv')[run['id']]
+  assert row['train_metric'] == 'trainer/loss_t2'
+  assert row['validation_metric'] == 'val/loss_t2'
+  assert bool(row['validation_value']) == (validation == 'present')
+
+
 def test_rolling_window_is_60_records_and_uses_pre_zoom_history(
     refresh, workspace, saved_figures):
   run = make_run(workspace, 'future_adjacent')

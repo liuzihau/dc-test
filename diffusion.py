@@ -134,6 +134,20 @@ class Diffusion(L.LightningModule):
     return itertools.chain(* parameters)
 
   def _validate_configuration(self):
+    neighbor = getattr(self.config, 'neighbor_prediction', {})
+    if bool(getattr(neighbor, 'enabled', False)):
+      if (self.config.algo.backbone != 'dit'
+          or getattr(self.config.step_memory, 'attention_mode', 'separate') != 'merged'
+          or not self.config.step_memory.pretrain.enabled
+          or not self.config.dcachehooping.enabled
+          or self.config.dcachehooping.two_forward.enabled
+          or self.config.dcachehooping.tentative.enabled
+          or self.config.dcachehooping.confidence.enabled
+          or self.config.dcachehooping.latent_mask_probability != 0):
+        raise ValueError('Neighbor prediction requires the core merged five-state final-feedback recipe')
+      if (not np.isfinite(float(neighbor.weight)) or float(neighbor.weight) < 0
+          or int(neighbor.chunk_size) < 1):
+        raise ValueError('Neighbor weight must be finite/nonnegative and chunk_size positive')
     if self.config.mode == 'sample_eval' and \
         self.config.sampling.first_hitting:
       assert self.config.loader.eval_batch_size == 1
@@ -370,6 +384,15 @@ class Diffusion(L.LightningModule):
     # batch size. Only Trainer.fit owns a resumable training/sampler cursor.
     trainer = getattr(self, '_trainer', None)
     if trainer is not None and trainer.state.fn == 'fit':
+      # Do not relabel an existing trajectory as a fresh attention-policy
+      # experiment, even when its parameter shapes happen to be compatible.
+      saved_config = checkpoint.get('hyper_parameters', {}).get('config', {})
+      saved_policy = saved_config.get('step_memory', {}).get('merged_policy', 'legacy')
+      current_policy = self.config.get('step_memory', {}).get('merged_policy', 'legacy')
+      if saved_policy != current_policy:
+        raise ValueError(
+          f'Cannot resume training across merged policies: {saved_policy} -> '
+          f'{current_policy}. Start a fresh run in a separate output directory.')
       connector = trainer._accelerator_connector
       self._batch_geometry_migration = migrate_batch_geometry(
         checkpoint,
@@ -473,6 +496,13 @@ class Diffusion(L.LightningModule):
     distributed = (
       self.trainer._accelerator_connector.use_distributed_sampler
       and self.trainer._accelerator_connector.is_distributed)
+    restore_data_cursor = bool(getattr(
+      getattr(self.config, 'checkpointing', {}), 'restore_data_cursor', False))
+    if restore_data_cursor and not distributed:
+      raise ValueError('restore_data_cursor requires explicit DDP, even for one GPU')
+    if restore_data_cursor and len(
+        self.trainer.fit_loop._combined_loader.flattened) != 1:
+      raise ValueError('restore_data_cursor supports one training dataloader')
     if distributed:
       sampler_cls = dataloader.FaultTolerantDistributedSampler
     else:
@@ -485,12 +515,48 @@ class Diffusion(L.LightningModule):
         raise ValueError(
           'Migrated sampler cursor reaches the dataset boundary; verify the '
           'same dataset and avoid an end-of-epoch/padded checkpoint')
-      if hasattr(dl.sampler, 'shuffle'):
+      if restore_data_cursor:
+        from numbers import Integral
+        original_sampler = dl.sampler
+        if not isinstance(original_sampler, torch.utils.data.DistributedSampler):
+          raise ValueError('restore_data_cursor requires an active DistributedSampler')
+        if (original_sampler.num_replicas != self.trainer.world_size
+            or original_sampler.rank != self.trainer.global_rank):
+          raise ValueError('Active sampler rank/world geometry does not match the Trainer')
+        if dl.batch_size != self.config.loader.batch_size:
+          raise ValueError('Active loader microbatch does not match the configured cursor geometry')
+        dl_sampler = sampler_cls(
+          dl.dataset, num_replicas=original_sampler.num_replicas,
+          rank=original_sampler.rank, shuffle=original_sampler.shuffle,
+          seed=original_sampler.seed, drop_last=original_sampler.drop_last)
+        if ((self.fast_forward_epochs is None)
+            != (self.fast_forward_batches is None)):
+          raise ValueError('Resume requires both saved epoch and completed-batch counters')
+        if self.fast_forward_batches is None:
+          dl_sampler.set_epoch(getattr(
+            self.trainer, 'current_epoch', original_sampler.epoch))
+        else:
+          epoch, completed = self.fast_forward_epochs, self.fast_forward_batches
+          if any(isinstance(value, bool) or not isinstance(value, Integral)
+                 or value < 0 for value in (epoch, completed)):
+            raise ValueError('Saved epoch and completed-batch counters must be nonnegative integers')
+          accumulation = self.trainer.accumulate_grad_batches
+          if completed % accumulation:
+            raise ValueError('Data cursor restoration requires a complete optimizer boundary')
+          # Use completed batches saved by on_save_checkpoint, NEVER a sampler
+          # counter advanced by DataLoader prefetch. on_load_checkpoint already
+          # rejects changed batch geometry unless explicitly migrated.
+          cursor = completed * self.config.loader.batch_size
+          if (cursor >= dl_sampler.num_samples
+              or cursor * dl_sampler.num_replicas >= len(dl.dataset)):
+            raise ValueError('Saved data cursor reaches an epoch boundary or exceeds the dataset')
+          dl_sampler.load_state_dict({'epoch': int(epoch), 'counter': int(cursor)})
+      elif hasattr(dl.sampler, 'shuffle'):
         dl_sampler = sampler_cls(
           dl.dataset, shuffle=dl.sampler.shuffle)
       else:
         dl_sampler = sampler_cls(dl.dataset)
-      if (distributed
+      if (distributed and not restore_data_cursor
           and self.fast_forward_epochs is not None
           and self.fast_forward_batches is not None):
         dl_sampler.load_state_dict({
@@ -509,6 +575,11 @@ class Diffusion(L.LightningModule):
           world_size=self.trainer.world_size,
           global_batch=self.config.loader.global_batch_size,
           max_steps=self.trainer.max_steps, seed=dl_sampler.seed)
+      loader_kwargs = {}
+      if restore_data_cursor:
+        loader_kwargs = dict(
+          collate_fn=dl.collate_fn, drop_last=dl.drop_last,
+          worker_init_fn=dl.worker_init_fn, generator=dl.generator)
       updated_dls.append(
         torch.utils.data.DataLoader(
           dl.dataset,
@@ -517,9 +588,12 @@ class Diffusion(L.LightningModule):
           pin_memory=self.config.loader.pin_memory,
           sampler=dl_sampler,
           shuffle=False,
-          persistent_workers=True))
+          persistent_workers=(self.config.loader.num_workers > 0
+                              if restore_data_cursor else True),
+          **loader_kwargs))
     self.trainer.fit_loop._combined_loader.flattened = updated_dls
-    if any(hasattr(dl.dataset, 'validate_resume') for dl in updated_dls):
+    if restore_data_cursor or any(
+        hasattr(dl.dataset, 'validate_resume') for dl in updated_dls):
       # Lightning 2.5 constructs this iterator BEFORE on_train_start. Changing
       # flattened alone does not replace the already active iterator.
       from compact_training import reset_compact_fetcher
@@ -1442,6 +1516,22 @@ class Diffusion(L.LightningModule):
     config = self.config.step_memory.pretrain
     hooping_config = self.config.dcachehooping
     tentative_config = hooping_config.tentative
+    neighbor_enabled = getattr(self.backbone, 'neighbor_heads', None) is not None
+    neighbor_results = []
+    def collect_neighbor(output, state):
+      if neighbor_enabled:
+        from neighbor_prediction import neighbor_prediction_loss
+        excluded = set(getattr(self.tokenizer, 'all_special_ids', []) or [])
+        for name in ('bos_token_id', 'eos_token_id', 'pad_token_id'):
+          token = getattr(self.tokenizer, name, None)
+          if token is not None:
+            excluded.add(token)
+        neighbor_results.append(neighbor_prediction_loss(
+          self.backbone.neighbor_heads, output.final_hidden, x0, state,
+          attention_mask, self.mask_index, excluded_token_ids=excluded,
+          ignore_first=self.ignore_bos,
+          chunk_size=int(self.config.neighbor_prediction.chunk_size),
+          checkpoint_chunks=bool(self.config.neighbor_prediction.checkpoint_chunks)))
 
     # A single categorical draw preserves both marginal supervision rates but
     # prevents the two extra trainable transformer graphs from being live at
@@ -1477,6 +1567,7 @@ class Diffusion(L.LightningModule):
       previous_final_hidden=None,
       return_step_kv=True,
       token_status=self._dcachehooping_status(full_state))
+    collect_neighbor(full_output, full_state)
     previous_cache = adjacent_gradients.consume(full_output.step_kv)
     previous_hidden = full_output.final_hidden.detach()
 
@@ -1514,6 +1605,7 @@ class Diffusion(L.LightningModule):
         step_memory_source_mask=source_mask,
         # Only t2 proposes tokens, and only on a tentative-route batch.
         return_editable_log_probs=(apply_tentative and state_index == 2))
+      collect_neighbor(state_output, state)
       state_losses.append(state_loss)
       source_masks.append(source_mask)
       source_diagnostics.append(dropout_diagnostics)
@@ -1661,6 +1753,19 @@ class Diffusion(L.LightningModule):
       + float(identity_config.weight) * identity_loss
       + optional_parameter_anchor)
 
+    neighbor_diagnostics = {}
+    if neighbor_enabled:
+      weights = [full_weight] + state_weights
+      neighbor_loss = sum(w * result['loss'] for w, result in zip(
+        weights, neighbor_results)) / weight_sum
+      neighbor_weighted = float(self.config.neighbor_prediction.weight) * neighbor_loss
+      total_loss = total_loss + neighbor_weighted
+      neighbor_diagnostics = {'neighbor_loss': neighbor_loss.detach(),
+                              'neighbor_weighted_loss': neighbor_weighted.detach()}
+      for state_name, result in zip(('full', 't0', 't1', 't2', 't3'), neighbor_results):
+        for name, value in result.items():
+          neighbor_diagnostics[f'neighbor_{state_name}_{name}'] = value.detach()
+
     cache_only_fraction = torch.stack([
       item['cache_only_fraction'] for item in source_diagnostics[2:]]).mean()
     current_only_fraction = torch.stack([
@@ -1703,6 +1808,7 @@ class Diffusion(L.LightningModule):
       'loss_total': total_loss.detach(),
     }
     diagnostics.update(tentative_metrics)
+    diagnostics.update(neighbor_diagnostics)
     if adjacent_enabled:
       # Every consumer input is an independent leaf. Frozen direct loss VJPs
       # bridge back into its producer once, never recursively across a third
@@ -1982,6 +2088,10 @@ class Diffusion(L.LightningModule):
         batch_size=batch_size)
     self.log('val/gate_mean', diagnostics['gate_mean'], on_step=False,
              on_epoch=True, sync_dist=True, batch_size=batch_size)
+    for name, value in diagnostics.items():
+      if name.startswith('neighbor_'):
+        self.log(f'val/{name}', value, on_step=False, on_epoch=True,
+                 sync_dist=True, batch_size=batch_size)
     for name in [
         'loss_base', 'latent_mask_loss', 'tentative_loss',
         'confidence_loss', 'tentative_count', 'tentative_wrong_count',

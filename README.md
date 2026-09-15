@@ -121,6 +121,68 @@ for guarantees, limitations and verification.
 
 ### Local plots and trials
 
+Current-preserving merged trial (2026-09-15): disables previous-V attenuation
+and the 20% cache-only query route. At t2/t3, masked queries use 95% joint
+current/previous attention and 5% current-only attention. Normal AdaLN gates,
+2D RoPE, final-state dropout, identity loss, trajectory weights and one-hop
+gradients remain unchanged. This is a **fresh experiment**, not a fix to apply
+while resuming the old run. It has not yet demonstrated improved quality.
+
+After activating `dcache` and making sure CUDA 2,3 are free:
+
+```bash
+unset DCACHE_RESUME_CKPT DCACHE_PAIR_RUN_DIR
+bash scripts/train/train_owt_dcache_merged_pair.sh 3090 off smoke --attention-policy current-preserving && \
+  bash scripts/train/train_owt_dcache_merged_pair.sh 3090 off tmux --attention-policy current-preserving
+```
+
+Use `h100` instead of `3090` for cloud GPU 0, and `on` instead of `off` for the
+neighbor auxiliary. The new output folder and tmux session end in
+`-current-preserving`. Its own compatible checkpoint resumes automatically;
+cross-policy resumes are rejected. Logs, temporary files and the tmux socket
+stay under this project. See [exact settings and verification](RESEARCH_EXPERIMENT_LOG.md#current-preserving-merged-attention).
+
+Historical single-attention ablation (legacy gate/dropout, full prepared data):
+`bash scripts/train/train_owt_dcache_merged_adjacent_5k.sh`.
+This retains the connected five-forward + detached final-state recipe and uses
+one shared-QKV attention with spatial/iteration-age 2D RoPE. It is not compatible
+with old two-attention checkpoints or the compact 1500–5000 continuation bundle.
+See [scope and comparison caveats](RESEARCH_EXPERIMENT_LOG.md#single-attention-2d-rope-ablation).
+
+Masked-neighbor auxiliary trial (merged attention only):
+`bash scripts/train/train_owt_dcache_merged_neighbors_5k.sh`.
+Adds two independent final-hidden LM heads for previous/next masked targets,
+with `0.5 * (previous CE + next CE) / 2`; a clean source position is allowed.
+Defaults to adjacent-only DCache credit; set `DCACHE_GRADIENT_MODE=detached`
+for the disconnected variant. Both use detached final-state feedback, distinct
+output directories and unchanged primary NLL records. This is fresh training,
+not continuation from an old checkpoint. See the [exact recipe, smoke commands
+and workspace experiment plan](RESEARCH_EXPERIMENT_LOG.md#masked-neighbor-auxiliary-trial).
+
+Historical matched auxiliary **off/on**, on local 2×3090 or cloud 1×H100
+(omitting `--attention-policy` intentionally keeps the legacy experiment):
+
+```bash
+# Run after activating the training environment and transferring FULL prepared data.
+bash scripts/train/train_owt_dcache_merged_pair.sh 3090 off smoke && \
+  bash scripts/train/train_owt_dcache_merged_pair.sh 3090 off tmux
+bash scripts/train/train_owt_dcache_merged_pair.sh h100 on smoke && \
+  bash scripts/train/train_owt_dcache_merged_pair.sh h100 on tmux
+```
+
+Run the first line on the local server and the second on the H100 server.
+Either hardware supports `off` or `on`. Both use merged 2D-RoPE attention,
+five-forward adjacent-only DCache gradients and detached final feedback.
+Defaults are CUDA `2,3` / `0`, microbatch 2, global batch 512, 5,000 updates,
+and 400 validation examples every 500 updates. Each variant has its own output
+folder, training lock and project-local tmux socket; smoke uses a separate
+temporary folder and does not advance the main run. The launcher prints the
+attach command. It enables the new explicit full-data cursor restore for its
+own checkpoints; historical runs keep their previous default behavior.
+This is **not** the old Vast automatic-recovery launcher: tmux survives an SSH
+disconnect, not an instance shutdown. See [complete environment setup, resume
+limits and cross-hardware comparison caveats](RESEARCH_EXPERIMENT_LOG.md#merged-auxiliary-off-on-launch-pair).
+
 For a space-limited cloud continuation, use the **compact 1500→5000 bundle**;
 see [export and transfer instructions](RESEARCH_EXPERIMENT_LOG.md#compact-data-continuation).
 It stores only required original packed rows and full validation, preserves the
@@ -135,8 +197,9 @@ MPLCONFIGDIR="$PWD/.cache/matplotlib" \
   python scripts/results/refresh_canonical_results.py
 ```
 
-It covers vanilla, objective, V2, five-forward final state, and the current
-**connected one-hop** run, with smoothing 60 and a 5,000-step cap. Runs without
+It covers vanilla, objective, V2, five-forward final state, the **connected
+one-hop** run, and **merged one-hop + final state without auxiliary heads**,
+with smoothing 60 and a 5,000-step cap. Runs without
 validation contribute training curves only; new validation appears on refresh.
 Two-forward is still outside this training dashboard.
 
@@ -166,6 +229,62 @@ Do not reuse another variant's directory. The log includes validation,
 comparison evaluation, safe resume, GPU smoke-test and storage instructions.
 
 ## Results and paper
+
+### Sudoku, Zebra and Countdown pilots
+
+The isolated [reasoning pipeline](scripts/reasoning/run_reasoning.py) supports
+all three tasks with protected clues, task-specific solving metrics, and matched
+merged-attention controls. It reuses our transformer; **it is not an exact
+reproduction of the unreleased Latent Tokens implementation**. Synthetic data
+is labelled pilot data; normalized external JSONL and preserved splits can also
+be imported. Read the [method and limitations](RESEARCH_EXPERIMENT_LOG.md#2026-09-14--sudoku-zebra-and-countdown-reasoning-pipeline)
+before spending a full training budget.
+
+```bash
+conda activate dcache
+# Small CPU plumbing checks, isolated from real data/checkpoints and all GPUs:
+for task in sudoku zebra countdown; do
+  bash scripts/train/train_reasoning.sh cpu "$task" both_aux smoke
+done
+
+# Prepare a shared pilot dataset ONCE. Default is only 1,000 training examples.
+# Choose larger pilot sizes explicitly; these are still not the paper's splits.
+REASONING_TRAIN_EXAMPLES=20000 REASONING_VALID_EXAMPLES=1000 \
+REASONING_TEST_EXAMPLES=1000 \
+  bash scripts/train/train_reasoning.sh 3090 sudoku mdm prepare
+
+# Matched no-memory + auxiliary vs dual-memory + auxiliary (run sequentially):
+bash scripts/train/train_reasoning.sh 3090 sudoku mdm_aux tmux
+# After that run finishes:
+bash scripts/train/train_reasoning.sh 3090 sudoku both_aux tmux
+
+# Full model-generated solving, or latest training/validation plot:
+bash scripts/train/train_reasoning.sh 3090 sudoku both_aux evaluate
+bash scripts/train/train_reasoning.sh 3090 sudoku both_aux plot
+```
+
+Replace `sudoku` with `zebra`/`countdown`; prepare each task separately. Replace
+`3090` with `h100` for one cloud GPU. Defaults are CUDA `2,3` / `0`, global batch
+128, microbatch 8, 5,000 optimizer updates, validation and periodic checkpoints
+every 500 updates, and 20-minute checkpoint saves at completed updates. Only the
+latest three full checkpoints are retained. A rerun resumes that variant's own
+`last.pt`; do not point this launcher at an OWT run. Tmux uses a project-local
+socket, and the attach command is printed. No automatic instance-reboot hook is
+installed. CPU smoke uses a **debug-size model**, not a full-model VRAM test.
+
+Variants: `vanilla` (one-state, ordinary 1D RoPE), `mdm` / `mdm_aux` (matched
+five-state, current-only 2D RoPE), `final`, `dcache`, `both` / `both_aux`.
+Main causal comparison: `mdm_aux` versus `both_aux`, then `mdm` versus `both`.
+All memory controls are trained models, not merely inference-time cache removal.
+Memory-specific robustness losses remain a separate ingredient; use
+`REASONING_NO_ROBUSTNESS=1` in a **new run directory** to ablate them.
+
+Training CSVs are under `outputs/reasoning/<task>/<variant>-<profile>-seed1/logs/`.
+Validation NLL averages fixed 10/30/50/70% answer corruptions **without warmup
+memory**. Content-only NLL is also recorded; full solving requires the separate
+generation command. This is conditional masked-token CE, not a diffusion ELBO
+or generative perplexity. See the log for nested-memory evaluation and
+multi-run plotting commands.
 
 - [Canonical run status](results/generated/tables/training/canonical_status.csv)
   and [training figures](results/generated/figures/training/).
