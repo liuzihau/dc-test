@@ -1,5 +1,6 @@
 """Real CPU optimizer-boundary training/recovery tests; no CUDA or downloads."""
 import copy
+import csv
 import json
 from pathlib import Path
 
@@ -22,6 +23,8 @@ def cpu_only(monkeypatch):
     monkeypatch.setattr(torch.cuda, "_lazy_init", forbidden)
     monkeypatch.setattr(torch.cuda, "set_device", forbidden)
     monkeypatch.setattr(torch.cuda, "get_rng_state", forbidden)
+    for name in ("reset_peak_memory_stats", "max_memory_allocated", "max_memory_reserved"):
+        monkeypatch.setattr(torch.cuda, name, forbidden)
     old_threads = torch.get_num_threads()
     yield
     torch.set_num_threads(old_threads)
@@ -159,6 +162,43 @@ def test_cpu_rng_collection_does_not_touch_available_cuda(monkeypatch):
     runner.restore_rng(state)
 
 
+def test_cpu_training_never_queries_cuda_memory_even_when_cuda_available(
+        data_dir, tmp_path, monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    # AdamW probes graph capture when availability is mocked, even for CPU
+    # parameters. Mock that unrelated probe too; never query a real device.
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    assert runner.peak_cuda_memory_metrics(torch.device("cpu")) == {}
+    path = tmp_path / "cpu-memory-guard"
+    runner.train(train_args(data_dir, path, max_steps=2, variant="mdm_aux"))
+    for metrics in (path / "logs").glob("attempt-*/metrics.csv"):
+        with metrics.open(newline="") as stream:
+            rows = list(csv.DictReader(stream))
+        assert rows
+        for row in rows:
+            assert "peak_cuda_allocated_gib" not in row
+            assert "peak_cuda_reserved_gib" not in row
+
+
+def test_cuda_memory_metrics_use_requested_device_and_gib_without_cuda(monkeypatch):
+    calls = []
+
+    def allocated(device):
+        calls.append(("allocated", device))
+        return 3 * 1024**3 // 2
+
+    def reserved(device):
+        calls.append(("reserved", device))
+        return 9 * 1024**3 // 4
+
+    monkeypatch.setattr(torch.cuda, "max_memory_allocated", allocated)
+    monkeypatch.setattr(torch.cuda, "max_memory_reserved", reserved)
+    device = torch.device("cuda", 3)  # A descriptor only; CUDA is never initialized.
+    assert runner.peak_cuda_memory_metrics(device) == {
+        "peak_cuda_allocated_gib": 1.5, "peak_cuda_reserved_gib": 2.25}
+    assert calls == [("allocated", device), ("reserved", device)]
+
+
 def test_no_robustness_flag_zeroes_all_source_probabilities(data_dir, tmp_path):
     args = train_args(data_dir, tmp_path / "not-launched")
     args.no_robustness = True
@@ -197,4 +237,37 @@ def test_plot_discards_abandoned_tail_with_completed_step_convention(tmp_path, m
     frame = pd.read_csv(tmp_path / 'plot-trial.csv')
     assert frame.step.tolist() == [1, 2, 4]
     assert 100.0 not in frame['train/loss'].tolist()
+    assert output.exists()
+
+
+@pytest.mark.parametrize("metric,expected", [(None, [9.0, 8.0]),
+                                            ("train/base_loss", [2.0, 1.0])])
+def test_plot_selects_and_labels_training_metric(tmp_path, monkeypatch, metric, expected):
+    monkeypatch.setenv("MPLCONFIGDIR", str(tmp_path / "matplotlib"))
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    directory = tmp_path / "aux-trial"
+    writer = runner.MetricWriter(directory / "logs/attempt-1", resume_step=0)
+    writer.log(1, {"train/loss": 9.0, "train/base_loss": 2.0, "val/conditional_nll": 3.0})
+    writer.log(2, {"train/loss": 8.0, "train/base_loss": 1.0, "val/conditional_nll": 2.0})
+    original = plt.subplots
+    plotted = []
+
+    def capture(*args, **kwargs):
+        figure, axes = original(*args, **kwargs)
+        plotted.append(axes)
+        return figure, axes
+
+    monkeypatch.setattr(plt, "subplots", capture)
+    output = tmp_path / "selected-metric.png"
+    args = ["plot", "--runs", str(directory), "--output", str(output), "--smooth", "1"]
+    if metric is not None:
+        args += ["--train-metric", metric]
+    runner.main(args)
+    train_axis, validation_axis = plotted[0]
+    assert train_axis.lines[0].get_ydata().tolist() == expected
+    assert (metric or "train/loss") in train_axis.get_ylabel()
+    assert validation_axis.lines[0].get_ydata().tolist() == [3.0, 2.0]
+    assert validation_axis.get_ylabel() == "val/conditional_nll"
     assert output.exists()

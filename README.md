@@ -318,6 +318,63 @@ The larger dataset is still **synthetic pilot data**, not the author's benchmark
 If the later model uses two attention sublayers, this one-attention baseline
 will not replace the extra-current-attention/parameter-matched controls.
 
+#### Sequential H100 queue: microbatch 128, no memory models
+
+The queue runs **Sudoku and Zebra**, each with `vanilla`, `mdm`, and `mdm_aux`,
+one job at a time. It excludes every recurrent model and Countdown. Microbatch
+128 and global batch 128 mean **one batch per optimizer update**. All six runs
+use 5,000 updates and new `mb128-gb128-seed1`-labelled directories; the previous
+microbatch-8 experiment is preserved and is **not** silently resumed at a new
+batch size. Changing grouping changes corruption RNG and auxiliary averaging;
+equal global batch does not imply exact replay.
+
+After syncing the code to the cloud and finishing/stopping the old GPU job:
+
+```bash
+cd /workspace/dc-test
+export DCACHE_PYTHON="$(command -v python)"
+
+# Prints the six jobs and paths without running them.
+bash scripts/train/train_reasoning_baselines_h100.sh plan --micro-batch 128 --global-batch 128
+
+# One tmux session handles preparation, preflight, all training, plots and evaluation.
+bash scripts/train/train_reasoning_baselines_h100.sh tmux --micro-batch 128 --global-batch 128
+
+# The launcher prints the exact project-local tmux attach command.
+bash scripts/train/train_reasoning_baselines_h100.sh status --micro-batch 128 --global-batch 128
+```
+
+Use `run` instead of `tmux` inside a session you already manage. The `smoke`
+action runs **only the full-model preflight**: for each task, `mini` (6 layers,
+width 512), BF16, microbatch 128, two complete AdamW updates and validation with
+the heaviest `mdm_aux` variant. This is different from the old debug-size smoke.
+It prints update time and peak PyTorch allocated VRAM. Production `run` performs
+this preflight automatically. An OOM or occupied GPU stops the queue; it never
+silently lowers the microbatch, alters the model, kills another job, or proceeds
+past a failed stage. A low instantaneous `nvidia-smi` reading alone is not proof
+that the full five-forward batch fits.
+
+Existing seed-17 20k/1k/1k pilot splits are reused after count/metadata/checksum
+verification. Missing splits are generated without overwriting a partial or
+different dataset. Every training run validates every 500 updates and retains
+the existing latest-three/20-minute checkpoint policy. After each run, the queue
+updates that task's comparison plot and generates solutions on **1,000 test
+examples** from the final/latest checkpoint (not validation-best), with the same
+candidate-8 top-prob policy and evaluation batch 8 across variants. Auxiliary
+heads do not generate tokens. Plots show `train/base_loss` separately from shared
+fixed-corruption validation NLL, not the auxiliary-inflated total training loss.
+Even base training CE uses a different corruption distribution for `vanilla`
+versus the five-state methods; use common validation/solving for their comparison.
+
+Queue status, console logs, smoke measurements and `figures/sudoku.png` /
+`figures/zebra.png` are under
+`outputs/reasoning/queues/sudoku-zebra-baselines-h100-pilot-v1-n20000-v1000-t1000-mb128-gb128-seed1/`.
+On an interruption, rerun the **same** command: the trainer verifies each run's
+own checkpoint/contract, completed training is skipped, and matching completed
+generation results are reused. Smoke checks rerun. No automatic instance-reboot
+hook is installed; tmux itself does not survive machine shutdown. Do not change
+batch geometry or repurpose an old run directory during resume.
+
 Variants: `vanilla` (one-state, ordinary 1D RoPE), `mdm` / `mdm_aux` (matched
 five-state, current-only 2D RoPE), `final`, `dcache`, `both` / `both_aux`.
 Main causal comparison: `mdm_aux` versus `both_aux`, then `mdm` versus `both`.

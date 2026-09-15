@@ -131,6 +131,14 @@ def restore_rng(state):
         torch.cuda.set_rng_state(state['cuda'].cpu())
 
 
+def peak_cuda_memory_metrics(device):
+    """Current rank's allocator peaks for one update; CPU never queries CUDA."""
+    if device.type != 'cuda':
+        return {}
+    return dict(peak_cuda_allocated_gib=torch.cuda.max_memory_allocated(device) / 1024**3,
+                peak_cuda_reserved_gib=torch.cuda.max_memory_reserved(device) / 1024**3)
+
+
 def save_checkpoint(run_dir, model, optimizer, step, contract, rank, world):
     local = rng_state()
     states = [None] * world
@@ -360,6 +368,8 @@ def train(args):
     from torch.utils.data import default_collate
     for step in range(start, args.max_steps):
         tick = time.monotonic()
+        if device.type == 'cuda':
+            torch.cuda.reset_peak_memory_stats(device)
         optimizer.zero_grad(set_to_none=True)
         summed = {}
         learning_rate = args.lr * min(1.0, (step + 1) / max(args.warmup_steps, 1))
@@ -398,6 +408,7 @@ def train(args):
                 row.update(lr=learning_rate, grad_norm=float(gradient_norm),
                            seconds_per_update=time.monotonic() - tick,
                            examples_seen=completed * args.global_batch)
+                row.update(peak_cuda_memory_metrics(device))
                 writer.log(completed, row)
                 atomic_json(run_dir / 'status.json', dict(status='running', step=completed,
                                                         max_steps=args.max_steps, pid=os.getpid(),
@@ -473,6 +484,7 @@ def plot(args):
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     figure, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+    train_metric = getattr(args, 'train_metric', 'train/loss')
     found, task = False, None
     for run in args.runs:
         run = Path(run)
@@ -493,7 +505,7 @@ def plot(args):
             continue
         frame = pd.concat(frames, ignore_index=True).groupby('step', as_index=False).last()
         label = run.name
-        for axis, column in zip(axes, ('train/loss', args.val_metric)):
+        for axis, column in zip(axes, (train_metric, args.val_metric)):
             if column in frame:
                 data = frame[['step', column]].dropna()
                 if not data.empty:
@@ -506,7 +518,10 @@ def plot(args):
         frame.to_csv(output_table, index=False)
     if not found:
         raise ValueError('No matching metrics found; inspect logs/attempt-*/metrics.csv column names')
-    for axis, title in zip(axes, ('Training objective (not NLL)', args.val_metric)):
+    train_label = {'train/loss': 'train/loss (training objective, not NLL)',
+                   'train/base_loss': 'train/base_loss (masked-answer CE)'}.get(
+                       train_metric, train_metric)
+    for axis, title in zip(axes, (train_label, args.val_metric)):
         axis.set(xlabel='Completed optimizer updates', ylabel=title)
         axis.grid(alpha=0.25)
         if axis.lines:
@@ -577,6 +592,7 @@ def parser():
     plotting.add_argument('--runs', nargs='+', required=True)
     plotting.add_argument('--output', required=True)
     plotting.add_argument('--smooth', type=int, default=60)
+    plotting.add_argument('--train-metric', default='train/loss')
     plotting.add_argument('--val-metric', default='val/conditional_nll')
     return root
 
