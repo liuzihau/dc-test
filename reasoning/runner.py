@@ -85,7 +85,7 @@ def build_model_config(args, dataset):
               'final': 'final', 'dcache': 'dcache', 'both': 'both',
               'both_aux': 'both'}[args.variant]
     tokenizer = dataset.tokenizer
-    return dict(
+    config = dict(
         vocab_size=tokenizer.vocab_size, pad_id=tokenizer.pad_id,
         mask_id=tokenizer.mask_id, special_ids=list(tokenizer.special_ids),
         hidden_size=hidden, n_heads=heads, n_layers=layers,
@@ -103,6 +103,25 @@ def build_model_config(args, dataset):
         identity_probability=0.0 if args.no_robustness else 0.25,
         identity_margin=0.05, identity_weight=0.10,
         identity_final_probability=0.50)
+    # Do not add a default-valued field to old serialized resume contracts.
+    merged_policy = getattr(args, 'merged_policy', 'legacy')
+    if merged_policy not in ('legacy', 'current_preserving'):
+        raise ValueError('Unknown merged policy')
+    if merged_policy == 'current_preserving':
+        if config['attention_mode'] != 'merged':
+            raise ValueError('current_preserving requires merged attention')
+        config.update(merged_policy=merged_policy, gate_enabled=False,
+                      cache_only_probability=0.0)
+    if getattr(args, 'stress_memory_routes', False):
+        if args.variant not in ('both', 'both_aux') or merged_policy != 'current_preserving':
+            raise ValueError('--stress-memory-routes requires both/both_aux with current_preserving')
+        if args.no_robustness:
+            raise ValueError('--stress-memory-routes cannot be combined with --no-robustness')
+        if args.micro_batch < 2:
+            raise ValueError('--stress-memory-routes requires micro_batch >=2 for shuffled identity')
+        config.update(identity_probability=1.0, final_dropout=0.0,
+                      source_dropout_warmup_steps=0)
+    return config
 
 
 class TrainingForward(nn.Module):
@@ -304,6 +323,11 @@ def train(args):
                     weight_decay=args.weight_decay, warmup_steps=args.warmup_steps,
                     grad_clip=args.grad_clip, precision=args.precision,
                     device_type=device.type)
+    if getattr(args, 'stress_memory_routes', False):
+        contract['stress_memory_routes'] = True
+        if rank == 0:
+            print('SMOKE STRESS ONLY: identity forced on, final feedback retained, source warmup off. '
+                  'This contract is not compatible with production training.', flush=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
                                  betas=(0.9, 0.999), eps=1e-8,
                                  weight_decay=args.weight_decay)
@@ -477,6 +501,9 @@ def evaluate(args):
 
 
 def plot(args):
+    labels = getattr(args, 'labels', None)
+    if labels is not None and len(labels) != len(args.runs):
+        raise ValueError('Provide exactly one plot label per run')
     os.environ.setdefault('MPLCONFIGDIR', str(Path(__file__).resolve().parents[1] /
                                             '.cache/runtime/reasoning/matplotlib'))
     import pandas as pd
@@ -486,7 +513,7 @@ def plot(args):
     figure, axes = plt.subplots(1, 2, figsize=(12, 4.5))
     train_metric = getattr(args, 'train_metric', 'train/loss')
     found, task = False, None
-    for run in args.runs:
+    for index, run in enumerate(args.runs):
         run = Path(run)
         if (run / 'contract.json').exists():
             current_task = json.loads((run / 'contract.json').read_text())['task']
@@ -504,7 +531,7 @@ def plot(args):
         if not frames:
             continue
         frame = pd.concat(frames, ignore_index=True).groupby('step', as_index=False).last()
-        label = run.name
+        label = labels[index] if labels is not None else run.name
         for axis, column in zip(axes, (train_metric, args.val_metric)):
             if column in frame:
                 data = frame[['step', column]].dropna()
@@ -521,7 +548,7 @@ def plot(args):
     train_label = {'train/loss': 'train/loss (training objective, not NLL)',
                    'train/base_loss': 'train/base_loss (masked-answer CE)'}.get(
                        train_metric, train_metric)
-    for axis, title in zip(axes, (train_label, args.val_metric)):
+    for axis, title in zip(axes, (train_label, getattr(args, 'val_label', None) or args.val_metric)):
         axis.set(xlabel='Completed optimizer updates', ylabel=title)
         axis.grid(alpha=0.25)
         if axis.lines:
@@ -558,6 +585,11 @@ def parser():
     fit.add_argument('--device', choices=('cpu', 'cuda'), default='cuda')
     fit.add_argument('--precision', choices=('fp32', 'bf16'), default='bf16')
     fit.add_argument('--gradient-mode', choices=('adjacent', 'detached'), default='adjacent')
+    fit.add_argument('--merged-policy', choices=('legacy', 'current_preserving'), default='legacy',
+                     help='Explicit corrected policy; legacy preserves historical run contracts')
+    fit.add_argument('--stress-memory-routes', action='store_true',
+                     help='SMOKE ONLY: force the identity reference and retain final feedback; '
+                          'uses an incompatible-to-production resume contract')
     fit.add_argument('--neighbor-weight', type=float, default=0.5)
     fit.add_argument('--no-robustness', action='store_true')
     fit.add_argument('--lr', type=float, default=3e-4)
@@ -594,6 +626,8 @@ def parser():
     plotting.add_argument('--smooth', type=int, default=60)
     plotting.add_argument('--train-metric', default='train/loss')
     plotting.add_argument('--val-metric', default='val/conditional_nll')
+    plotting.add_argument('--labels', nargs='+', help='Optional display name for each run, in order')
+    plotting.add_argument('--val-label', help='Optional explicit validation-protocol axis label')
     return root
 
 

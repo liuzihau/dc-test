@@ -51,11 +51,23 @@ DEFAULTS = dict(
 class ReasoningModel(nn.Module):
     def __init__(self, config):
         super().__init__()
-        unknown = set(config) - (set(DEFAULTS) | {"vocab_size"})
+        unknown = set(config) - (set(DEFAULTS) | {"vocab_size", "merged_policy"})
         if unknown:
             raise ValueError("Unknown reasoning model config keys: " + ", ".join(sorted(unknown)))
         self.config = {**copy.deepcopy(DEFAULTS), **copy.deepcopy(dict(config))}
         c = self.config
+        # Keep old default contracts exactly unchanged: a missing policy means
+        # legacy, including when an old checkpoint is loaded for evaluation.
+        merged_policy = c.pop("merged_policy", "legacy")
+        if merged_policy not in {"legacy", "current_preserving"}:
+            raise ValueError("merged_policy must be legacy or current_preserving")
+        if merged_policy != "legacy":
+            c["merged_policy"] = merged_policy
+        if merged_policy == "current_preserving" and (
+                c["attention_mode"] != "merged" or c["gate_enabled"]
+                or c["cache_only_probability"] != 0):
+            raise ValueError("current_preserving requires merged attention, no previous-V gate, "
+                             "and cache_only_probability=0")
         self.mask_id, self.pad_id = int(c["mask_id"]), int(c["pad_id"])
         if (c["vocab_size"] < 2 or not 0 <= self.mask_id < c["vocab_size"]
                 or not 0 <= self.pad_id < c["vocab_size"] or self.mask_id == self.pad_id):
@@ -104,6 +116,7 @@ class ReasoningModel(nn.Module):
             loader=dict(eval_batch_size=1),
             step_memory=dict(enabled=self.has_dcache,
                              attention_mode="merged" if c["attention_mode"] == "merged" else "separate",
+                             merged_policy=merged_policy,
                              current_only_merged=c["attention_mode"] == "merged",
                              spatial_rope_dim=head_dim-temporal, temporal_rope_dim=temporal,
                              gate=dict(enabled=c["gate_enabled"], init=c["gate_init"])),

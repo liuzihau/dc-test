@@ -272,6 +272,10 @@ latest three full checkpoints are retained. A rerun resumes that variant's own
 socket, and the attach command is printed. No automatic instance-reboot hook is
 installed. CPU smoke uses a **debug-size model**, not a full-model VRAM test.
 
+The general launcher above preserves the **legacy** memory recipe for old
+checkpoints. For new corrected merged-attention memory trials, use the dedicated
+H100 memory queue below; it explicitly selects `current_preserving`.
+
 #### First H100 trial: objective-matched MDM + neighbor prediction
 
 Use the dedicated no-memory recipe first; the choice of merged versus separate
@@ -374,6 +378,93 @@ own checkpoint/contract, completed training is skipped, and matching completed
 generation results are reused. Smoke checks rerun. No automatic instance-reboot
 hook is installed; tmux itself does not survive machine shutdown. Do not change
 batch geometry or repurpose an old run directory during resume.
+
+#### H100 memory queue: corrected merged `both` and `both_aux`
+
+This opt-in queue runs **Sudoku `both` → Sudoku `both_aux` → Zebra `both` →
+Zebra `both_aux`**, sequentially. The existing six-run no-memory queue is
+unchanged. Each new run uses the same 20k/1k/1k seed-17 pilot splits, model size
+`mini` (6 layers, width 512, 8 heads), model/data-order seed 1, BF16,
+microbatch 128/global batch 128 and 5,000 optimizer updates. It needs **no OpenWebText
+dataset or checkpoint**.
+
+| Variant | Five-state objective | Recurrent memory | Neighbor heads |
+| --- | --- | --- | --- |
+| `mdm` (existing control) | Yes | None | Off |
+| `mdm_aux` (existing control) | Yes | None | On, weight 0.5 |
+| `both` | Yes | DCache + detached final state | Off |
+| `both_aux` | Yes | DCache + detached final state | On, weight 0.5 |
+
+Both new variants use **one merged attention**, current+previous KV, joint
+softmax and 2D RoPE (sequence position plus previous/current iteration identity,
+not continuous noise level). The corrected policy keeps current KV available:
+previous-V gate **off**, cache-only dropout **0%**, current-only **5%** of eligible
+masked queries at the last two training states. Final-state dropout is **10%**
+per trajectory. Identity-reference probability is **25%**, weight 0.1/margin 0.05,
+with a 50:50 DCache/final shuffle choice when final feedback is available.
+DCache gradients cross each of the four adjacent boundaries but **never two
+boundaries from one state's loss**; final-state feedback always stays detached.
+The five base losses retain weights `(0.05, 0.10, 0.20, 1.00, 0.70) / 2.05`.
+`both_aux` adds 0.5 times the trajectory-weighted mean of prev/next CE, only
+where the **target neighbor** is masked and both endpoints are valid content.
+The source may be revealed. No gold auxiliary target is injected into a forward.
+
+Sync the updated repository to the H100 first. **Finish or stop your existing
+GPU queue before starting this one**; neither launcher kills other processes.
+
+```bash
+cd /workspace/dc-test
+export DCACHE_PYTHON="$(command -v python)"
+
+# Inspect the four jobs without launching GPU work.
+bash scripts/train/train_reasoning_memory_h100.sh plan --micro-batch 128 --global-batch 128
+
+# A single tmux session: verify/prepare data, preflight, train, plot and evaluate.
+bash scripts/train/train_reasoning_memory_h100.sh tmux --micro-batch 128 --global-batch 128
+
+# Prints the current stage and status; the launcher also prints its attach command.
+bash scripts/train/train_reasoning_memory_h100.sh status --micro-batch 128 --global-batch 128
+```
+
+Use `run` instead of `tmux` inside an existing tmux session. Use `smoke` to run
+only the preflight. Production launch automatically performs the full-model
+preflight, so a separate `smoke && tmux` is unnecessary. Preflight uses
+`both_aux` for **both full task lengths**, microbatch 128, two AdamW updates,
+auxiliary heads and adjacent backward. It **forces an identity-reference forward
+on every update**, retains final feedback and tests current-only dropout. Peak
+PyTorch VRAM and time/update are recorded in `full_model_smoke.json`. Smoke
+contracts/directories are distinct from production; the forced probabilities
+are never used for the real trials. GPU fit is not established by CPU tests:
+OOM stops the queue, without silently reducing the batch.
+
+Every 500 updates, validation uses the same fixed 128 examples and independent
+10/30/50/70% answer masks as the controls: **cold conditional NLL, without
+previous memory**, not an ELBO or generative perplexity. After each run, all 1,000
+test examples are decoded using **both memories** and the same candidate-8
+top-prob policy, evaluation batch 8/seed 2026 and final/latest checkpoint as the
+controls. Neighbor heads do not generate tokens. Training figures exclude
+auxiliary/identity loss from the `train/base_loss` panel; the validation panel
+explicitly says cold NLL. Compatible existing control curves are included after
+full training-contract and validation-protocol checks; missing/incompatible
+controls are not modified, retrained or silently included.
+
+Runs are under `outputs/reasoning/<task>/`, with prefixes
+`both-h100-current-preserving-` and `both_aux-h100-current-preserving-` followed
+by the dataset/batch/seed labels.
+Queue status, console logs, smoke reports and `figures/sudoku.png` /
+`figures/zebra.png` are under
+`outputs/reasoning/queues/sudoku-zebra-memory-current-preserving-h100-pilot-v1-n20000-v1000-t1000-mb128-gb128-seed1/`.
+Latest-three full checkpoint retention, 500-update and 20-minute saving, strict
+full-state resume and project-local `.cache`/tmux sockets are shared with the
+baseline queue. Rerun the same command after an interruption; no automatic
+machine-reboot hook is installed. Old legacy reasoning, batch-8 and OWT runs
+are never imported into these new trials.
+
+Interpretation: `both_aux` versus `both` isolates the added auxiliary objective
+within this memory recipe. `both` versus `mdm`, or `both_aux` versus `mdm_aux`,
+tests the **complete memory-training package** (including robustness/identity
+loss and additional computation), not solely architecture or matched FLOPs.
+The task data is still synthetic pilot data, not the authors' benchmark splits.
 
 Variants: `vanilla` (one-state, ordinary 1D RoPE), `mdm` / `mdm_aux` (matched
 five-state, current-only 2D RoPE), `final`, `dcache`, `both` / `both_aux`.

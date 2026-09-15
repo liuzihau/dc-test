@@ -1,5 +1,10 @@
-"""Sequential, restartable H100 pilots; no memory models or GPU work on import."""
+"""Sequential, restartable H100 reasoning suites; no GPU work on import.
+
+The original baseline suite/paths/contracts are preserved. The opt-in memory
+suite uses corrected merged attention and separate scientific run directories.
+"""
 import argparse
+import copy
 import csv
 import fcntl
 import hashlib
@@ -18,6 +23,7 @@ CLI = ROOT / 'scripts/reasoning/run_reasoning.py'
 ENTRY = ROOT / 'scripts/reasoning/run_baseline_queue.py'
 TASKS = ('sudoku', 'zebra')
 VARIANTS = ('vanilla', 'mdm', 'mdm_aux')
+MEMORY_VARIANTS = ('both', 'both_aux')
 
 
 def atomic_json(path, value):
@@ -44,6 +50,7 @@ def digest(path):
 def parser():
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument('action', choices=('plan', 'smoke', 'run', 'tmux', 'status'))
+    result.add_argument('--suite', choices=('baselines', 'memory'), default='baselines')
     result.add_argument('--micro-batch', type=int, default=int(os.getenv('REASONING_MICRO_BATCH', '128')))
     result.add_argument('--global-batch', type=int, default=int(os.getenv('REASONING_GLOBAL_BATCH', '128')))
     result.add_argument('--max-steps', type=int, default=int(os.getenv('REASONING_MAX_STEPS', '5000')))
@@ -62,6 +69,8 @@ def parser():
 class BaselineQueue:
     def __init__(self, args):
         self.args = args
+        self.memory_suite = args.suite == 'memory'
+        self.variants = MEMORY_VARIANTS if self.memory_suite else VARIANTS
         args.data_root = args.data_root.resolve()
         args.output_root = args.output_root.resolve()
         for name in ('micro_batch', 'global_batch', 'max_steps', 'train_examples',
@@ -81,9 +90,10 @@ class BaselineQueue:
             raise ValueError('Launch this single-GPU queue outside torchrun/DDP')
         self.label = f'pilot-v1-n{args.train_examples}-v{args.valid_examples}-t{args.test_examples}'
         self.batch_label = f'mb{args.micro_batch}-gb{args.global_batch}-seed{args.seed}'
+        suite_label = 'memory-current-preserving' if self.memory_suite else 'baselines'
         self.directory = (args.queue_dir or args.output_root / 'queues' /
-                          f'sudoku-zebra-baselines-h100-{self.label}-{self.batch_label}').resolve()
-        self.spec = dict(version=1, tasks=list(TASKS), variants=list(VARIANTS),
+                          f'sudoku-zebra-{suite_label}-h100-{self.label}-{self.batch_label}').resolve()
+        self.spec = dict(version=1, tasks=list(TASKS), variants=list(self.variants),
                          micro_batch=args.micro_batch, global_batch=args.global_batch,
                          max_steps=args.max_steps, seed=args.seed, gpu=args.gpu,
                          train_examples=args.train_examples, valid_examples=args.valid_examples,
@@ -91,6 +101,14 @@ class BaselineQueue:
                          data_root=str(args.data_root.resolve()), output_root=str(args.output_root.resolve()),
                          size='mini', precision='bf16', gradient_mode='detached',
                          no_robustness=True, generation_checkpoint='last', evaluation_seed=2026)
+        if self.memory_suite:
+            self.spec.update(suite='memory', gradient_mode='adjacent', no_robustness=False,
+                             merged_policy='current_preserving', gate_enabled=False,
+                             cache_only_probability=0.0, current_only_probability=0.05,
+                             final_dropout=0.10, identity_probability=0.25,
+                             identity_weight=0.10, identity_margin=0.05,
+                             identity_final_probability=0.50, neighbor_weight=0.5,
+                             smoke_stress_memory_routes=True)
         self.env = dict(os.environ)
         for name in list(self.env):
             if name.startswith(('TORCHELASTIC_', 'MASTER_')):
@@ -107,7 +125,56 @@ class BaselineQueue:
         return self.args.data_root.resolve() / f'{task}-{self.label}'
 
     def run_dir(self, task, variant):
-        return self.args.output_root.resolve() / task / f'{variant}-h100-{self.label}-{self.batch_label}'
+        policy = '-current-preserving' if self.memory_suite else ''
+        return self.args.output_root.resolve() / task / f'{variant}-h100{policy}-{self.label}-{self.batch_label}'
+
+    def compatible_baseline_runs(self, task):
+        """Read-only plot overlays, never train or resume an existing control.
+
+        Match the complete training contract except the documented intervention
+        (memory/auxiliary/trajectory), and match the fixed validation protocol.
+        Missing controls are fine; incompatible controls are visibly skipped.
+        """
+        if not self.memory_suite:
+            return []
+        reference_dir = self.run_dir(task, 'both')
+        reference_contract = reference_dir / 'contract.json'
+        reference_launch = reference_dir / 'launch.json'
+        if not reference_contract.exists() or not reference_launch.exists():
+            return []
+        contract = json.loads(reference_contract.read_text())
+        launch = json.loads(reference_launch.read_text())
+        if contract['data_sha256'] != digest(self.data_dir(task) / 'manifest.json'):
+            raise ValueError('Memory plot reference differs from the verified shared dataset')
+        result = []
+        for variant in VARIANTS:
+            directory = (self.args.output_root / task /
+                         f'{variant}-h100-{self.label}-{self.batch_label}')
+            if not directory.exists():
+                continue
+            try:
+                actual = json.loads((directory / 'contract.json').read_text())
+                old_launch = json.loads((directory / 'launch.json').read_text())
+                expected = copy.deepcopy(contract)
+                expected['variant'] = variant
+                model = expected['model_config']
+                model.pop('merged_policy', None)
+                model.update(memory_mode='none',
+                             attention_mode='vanilla' if variant == 'vanilla' else 'merged',
+                             neighbors=variant == 'mdm_aux', gradient_mode='detached',
+                             trajectory='single' if variant == 'vanilla' else 'five',
+                             gate_enabled=True, cache_only_probability=0.0,
+                             current_only_probability=0.0, final_dropout=0.0,
+                             identity_probability=0.0)
+                validation_keys = ('eval_seed', 'eval_batch_size', 'validation_examples')
+                if actual != expected or any(old_launch[k] != launch[k] for k in validation_keys):
+                    raise ValueError('training or fixed-validation contract differs')
+                if not any((directory / 'logs').glob('attempt-*/metrics.csv')):
+                    raise ValueError('no recorded metrics')
+                result.append(str(directory))
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                print(f'Skipping incompatible baseline plot overlay {directory}: {error}', flush=True)
+        return result
 
     def status(self, state, **fields):
         atomic_json(self.directory / 'status.json', dict(status=state, pid=os.getpid(),
@@ -189,10 +256,20 @@ class BaselineQueue:
                    '--size', 'mini', '--device', 'cuda', '--precision', 'bf16',
                    '--micro-batch', str(self.args.micro_batch), '--global-batch', str(self.args.global_batch),
                    '--max-steps', '2' if smoke else str(self.args.max_steps), '--seed', str(self.args.seed),
-                   '--gradient-mode', 'detached', '--no-robustness']
+                   '--gradient-mode', 'adjacent' if self.memory_suite else 'detached']
+        if self.memory_suite:
+            if variant not in MEMORY_VARIANTS:
+                raise ValueError('The memory suite only trains both and both_aux')
+            command += ['--merged-policy', 'current_preserving', '--neighbor-weight', '0.5']
+        else:
+            command += ['--no-robustness']
         if smoke:
             command += ['--fresh', '--val-every', '1', '--save-every', '1', '--save-seconds', '0',
                         '--log-every', '1', '--validation-examples', '8', '--eval-batch-size', '8']
+            if self.memory_suite:
+                # Force the expensive identity reference on every smoke update;
+                # stress checkpoints/configs are never production checkpoints.
+                command += ['--stress-memory-routes']
         return command
 
     def checkpoint(self, directory, expected_step):
@@ -218,8 +295,9 @@ class BaselineQueue:
                 start = int(json.loads(target.with_suffix('.pt.json').read_text())['step'])
                 self.checkpoint(directory, start)
             expected_step = start + 2
-            # The heaviest no-memory variant covers both full sequence lengths.
-            command = self.train_command(task, 'mdm_aux', directory, smoke=True)
+            # The heaviest variant covers both full sequence lengths.
+            smoke_variant = 'both_aux' if self.memory_suite else 'mdm_aux'
+            command = self.train_command(task, smoke_variant, directory, smoke=True)
             command[command.index('--max-steps') + 1] = str(expected_step)
             # A first-update OOM can leave contract.json but no checkpoint.
             # The normal strict contract path can safely retry that directory;
@@ -236,6 +314,9 @@ class BaselineQueue:
                                  start_step=start, end_step=expected_step,
                                  logged_updates=[row for row in rows if row.get('seconds_per_update')
                                                  and start < int(float(row['step'])) <= expected_step])
+            if self.memory_suite:
+                summary[task].update(variant=smoke_variant, merged_policy='current_preserving',
+                                     gradient_mode='adjacent', stress_memory_routes=True)
             for row in summary[task]['logged_updates']:
                 print(f'{task} full-size smoke: step {row["step"]}, {row["seconds_per_update"]} s/update, '
                       f'peak allocated {row.get("peak_cuda_allocated_gib", "not logged")} GiB', flush=True)
@@ -257,6 +338,7 @@ class BaselineQueue:
                 or settings['split'] != 'test'
                 or settings['examples'] != self.args.eval_examples or settings['protocol'] != 'generate'
                 or settings['policy'] != 'top_prob' or settings['seed'] != 2026
+                or settings.get('memory_condition', 'correct') != 'correct'
                 or settings['batch_size'] != 8 or result['metrics']['num_examples'] != self.args.eval_examples):
             raise ValueError(f'Evaluation metadata does not match this queue: {output}')
         print(f'Validated solving result: {output}', flush=True)
@@ -285,18 +367,24 @@ class BaselineQueue:
                     return
                 for task in TASKS:
                     finished_runs = []
-                    for variant in VARIANTS:
+                    for variant in self.variants:
                         directory = self.run_dir(task, variant)
                         # Always let the trainer verify the full resume contract.
                         # It returns immediately for an already completed run.
                         self.subprocess(self.train_command(task, variant, directory), f'train-{task}-{variant}')
                         self.checkpoint(directory, self.args.max_steps)
                         finished_runs.append(str(directory))
-                        self.subprocess([sys.executable, str(CLI), 'plot', '--runs', *finished_runs,
+                        overlays = self.compatible_baseline_runs(task)
+                        plot_command = [sys.executable, str(CLI), 'plot', '--runs', *overlays, *finished_runs,
                             '--output', str(self.directory / 'figures' / f'{task}.png'),
-                            '--train-metric', 'train/base_loss'], f'plot-{task}-{variant}')
+                            '--train-metric', 'train/base_loss']
+                        if self.memory_suite:
+                            plot_command += ['--val-label', 'Cold validation NLL (10/30/50/70% masks)',
+                                             '--labels', *[Path(run).name.split('-h100', 1)[0]
+                                                           for run in [*overlays, *finished_runs]]]
+                        self.subprocess(plot_command, f'plot-{task}-{variant}')
                         self.evaluate(task, variant, directory)
-                self.status('finished', experiments_completed=6, max_steps=self.args.max_steps)
+                self.status('finished', experiments_completed=len(TASKS)*len(self.variants), max_steps=self.args.max_steps)
             except BaseException as error:
                 self.status('stopped', error=str(error), resume='Rerun the same queue command; no automatic batch reduction')
                 raise
@@ -304,20 +392,28 @@ class BaselineQueue:
     def plan(self):
         print(f'Microbatch {self.args.micro_batch}; global batch {self.args.global_batch}; '
               f'accumulation {self.args.global_batch // self.args.micro_batch}. GPU {self.args.gpu}.')
-        print('Full mini-model preflight: Sudoku and Zebra, mdm_aux, two AdamW updates each.')
-        for index, (task, variant) in enumerate(((t, v) for t in TASKS for v in VARIANTS), 1):
+        smoke_variant = 'both_aux (forced identity reference)' if self.memory_suite else 'mdm_aux'
+        print(f'Full mini-model preflight: Sudoku and Zebra, {smoke_variant}, two AdamW updates each.')
+        if self.memory_suite:
+            print('Corrected merged attention + adjacent DCache + detached final state. '
+                  'Previous-V gate OFF, cache-only OFF, current-only 5%, final dropout 10%, '
+                  'identity probability 25%. Auxiliary weight 0.5 for both_aux only.')
+        for index, (task, variant) in enumerate(((t, v) for t in TASKS for v in self.variants), 1):
             print(f'{index}. {task}/{variant}: {self.args.max_steps} updates -> plot -> '
                   f'{self.args.eval_examples}-example generation\n   {self.run_dir(task, variant)}')
         print(f'Queue status/console/figures: {self.directory}')
-        print('All are fresh batch-labelled runs unless their OWN compatible checkpoint exists. No memory models.')
+        print('All are fresh batch-labelled runs unless their OWN compatible checkpoint exists. '
+              + ('No baseline or OWT checkpoints are imported.' if self.memory_suite else 'No memory models.'))
 
     def tmux(self):
         socket = ROOT / '.cache/tmux/reasoning-queue.sock'
         socket.parent.mkdir(parents=True, exist_ok=True)
         if len(str(socket)) > 100:
             raise ValueError('Use a shorter checkout path for the tmux socket')
-        session = f'reasoning-baselines-gpu{self.args.gpu}-{hashlib.sha256(str(self.directory).encode()).hexdigest()[:8]}'
+        session = f'reasoning-{self.args.suite}-gpu{self.args.gpu}-{hashlib.sha256(str(self.directory).encode()).hexdigest()[:8]}'
         command = [sys.executable, str(ENTRY), 'run']
+        if self.memory_suite:
+            command += ['--suite', 'memory']
         for name in ('micro_batch', 'global_batch', 'max_steps', 'seed', 'gpu', 'train_examples',
                      'valid_examples', 'test_examples', 'eval_examples', 'data_root', 'output_root'):
             command += ['--' + name.replace('_', '-'), str(getattr(self.args, name))]
