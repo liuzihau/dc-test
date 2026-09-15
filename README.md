@@ -272,6 +272,52 @@ latest three full checkpoints are retained. A rerun resumes that variant's own
 socket, and the attach command is printed. No automatic instance-reboot hook is
 installed. CPU smoke uses a **debug-size model**, not a full-model VRAM test.
 
+#### First H100 trial: objective-matched MDM + neighbor prediction
+
+Use the dedicated no-memory recipe first; the choice of merged versus separate
+attention **for the later recurrent model is deferred**. This baseline already
+works without the legacy memory gate/source-dropout mechanisms. It uses one
+current-only attention per block, the existing 2D RoPE layout, five independent
+teacher-forced states, and neighbor weight 0.5. No DCache or final feedback is
+created or consumed. No OpenWebText data/checkpoint is needed.
+
+On the cloud machine, with the repository synced and its Python environment
+installed:
+
+```bash
+cd /workspace/dc-test
+export DCACHE_PYTHON="$(command -v python)"
+
+# Prepare once: 20,000 training / 1,000 validation / 1,000 test pilot examples.
+bash scripts/train/train_reasoning_mdm_aux_h100.sh sudoku prepare
+
+# Isolated debug-size GPU check, followed by the actual 5,000-update run.
+bash scripts/train/train_reasoning_mdm_aux_h100.sh sudoku smoke &&
+bash scripts/train/train_reasoning_mdm_aux_h100.sh sudoku tmux
+
+# Refresh the figure; evaluate runs model-generated solving (100 test examples).
+bash scripts/train/train_reasoning_mdm_aux_h100.sh sudoku plot
+bash scripts/train/train_reasoning_mdm_aux_h100.sh sudoku evaluate
+```
+
+Replace `sudoku` with `zebra` or `countdown`. Run trials sequentially on the same
+GPU. The default data suffix is `pilot-v1-n20000-v1000-t1000`, shared across
+future variants; the baseline run is
+`outputs/reasoning/sudoku/mdm_aux-h100-pilot-v1-n20000-v1000-t1000-seed1/`.
+Existing smaller demo datasets are not reused accidentally. Custom paths/counts
+are supported through the `REASONING_*` variables printed by `--help`; retain
+those overrides for plotting, evaluation and resuming. The actual training
+dataset hashes/settings are recorded in `contract.json` and `launch.json`.
+Validation during training uses a fixed 128-example subset of the prepared
+validation split at all four mask ratios, every 500 updates; the remaining
+examples are available for later larger evaluations. Auxiliary heads are not
+used to generate tokens. Resume by rerunning the same `tmux` command after the
+old process exits. This does not install an automatic machine-reboot hook.
+
+The larger dataset is still **synthetic pilot data**, not the author's benchmark.
+If the later model uses two attention sublayers, this one-attention baseline
+will not replace the extra-current-attention/parameter-matched controls.
+
 Variants: `vanilla` (one-state, ordinary 1D RoPE), `mdm` / `mdm_aux` (matched
 five-state, current-only 2D RoPE), `final`, `dcache`, `both` / `both_aux`.
 Main causal comparison: `mdm_aux` versus `both_aux`, then `mdm` versus `both`.
