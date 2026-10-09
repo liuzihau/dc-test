@@ -1,0 +1,20 @@
+# Diffusion-vs-AR Sudoku dataset
+# 9x9 Sudoku puzzle-solution pairs from CSV files
+name: dvar-sudoku
+train: synthetic
+valid: synthetic
+tokenizer_name_or_path: dvar-sudoku
+cache_dir: null  # Set via environment
+
+wrap: True
+streaming: True
+insert_train_eos: True
+insert_valid_eos: True
+
+# Data file paths (relative to project root)
+train_data_path: diffusion-vs-ar/data/sudoku_train.csv
+valid_data_path: diffusion-vs-ar/data/sudoku_test.csv
+
+# Vocabulary config (14 tokens)
+# Tokens: PAD(0), BOS(1), EOS(2), SEP(3), M(4, empty cell), 1-9(5-13)
+vocab_size: 14

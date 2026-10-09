@@ -1,0 +1,12 @@
+name: mini
+type: ddit
+hidden_size: 512
+cond_dim: 128
+length: 1024
+n_blocks: 6
+n_heads: 8
+scale_by_sigma: True
+dropout: 0.1
+tie_word_embeddings: False
+
+lr: 3e-4

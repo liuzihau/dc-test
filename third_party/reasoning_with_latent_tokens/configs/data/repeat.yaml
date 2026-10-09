@@ -1,0 +1,21 @@
+# Repeat dataset: all samples are the same fixed sequence.
+# Useful for sanity checking that a model can overfit.
+# If the model can't learn this, something is fundamentally broken.
+name: repeat
+train: synthetic
+valid: synthetic
+tokenizer_name_or_path: synthetic
+cache_dir: null
+# these do not apply to synthetic
+wrap: True
+streaming: True
+insert_train_eos: True
+insert_valid_eos: True
+###
+# Small dataset - should be able to overfit quickly
+train_dataset_size: 1000
+validation_dataset_size: 100
+# Vocab: 0-8 are content tokens, 9=BOS, 10=EOS
+vocab_size: 11
+# seed for reproducible pattern generation
+seed: 42

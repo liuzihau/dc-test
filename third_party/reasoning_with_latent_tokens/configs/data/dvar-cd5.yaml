@@ -1,0 +1,21 @@
+# Diffusion-vs-AR Countdown-5 dataset
+# Arithmetic puzzles with 5 input numbers + target
+name: dvar-cd5
+train: synthetic
+valid: synthetic
+tokenizer_name_or_path: dvar-cd
+cache_dir: null  # Set via environment
+
+wrap: True
+streaming: True
+insert_train_eos: True
+insert_valid_eos: True
+
+# Data file paths (relative to project root)
+train_data_path: diffusion-vs-ar/data/cd5_train.jsonl
+valid_data_path: diffusion-vs-ar/data/cd5_test.jsonl
+
+# Vocabulary config (20 tokens)
+# Tokens: PAD(0), BOS(1), EOS(2), SEP(3), ','(4), '='(5),
+#         +,-,*,/(6-9), 0-9(10-19)
+vocab_size: 20

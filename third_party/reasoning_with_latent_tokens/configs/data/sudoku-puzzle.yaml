@@ -1,0 +1,28 @@
+# Sudoku Puzzle dataset configuration
+# Loads pre-generated sudoku puzzles with solution strategies
+name: sudoku-puzzle
+train: synthetic
+valid: synthetic
+tokenizer_name_or_path: sudoku-puzzle
+cache_dir: null
+# these do not apply to synthetic
+wrap: True
+streaming: True
+insert_train_eos: True
+insert_valid_eos: True
+###
+# Paths to data files
+# Dataset sizes are automatically determined from the data files (uses all available data)
+# These paths are set via ESOLM_PUZZLE_DIR environment variable in train_master.sh/gen_master.sh
+train_data_path: null
+valid_data_path: null
+
+# Vocabulary config
+# Tokens: 0 (PAD), 1-9 (digits 1-9), 10 (MASK), 11 (SEP), 12 (BOS), 13 (EOS)
+vocab_size: 14
+
+# Whether to include puzzle before solution
+# True: [BOS] puzzle(81) [SEP] solution(81) [EOS] = 165 tokens
+# False: [BOS] solution(81) [EOS] = 83 tokens
+include_puzzle: True
+

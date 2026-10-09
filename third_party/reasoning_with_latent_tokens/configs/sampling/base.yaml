@@ -1,0 +1,15 @@
+# Default sampling configuration
+predictor: ancestral  # ancestral_cache (only for MDLM), ancestral, analytic
+steps: 1000
+noise_removal: ancestral  # 'ancestral', 'greedy', 'none'
+use_float64: True
+p_nucleus: 1.0
+num_sample_batches: 2  # Total samples: `num_gpus` * `loader.eval_batch_size` * num_sample_batches
+num_sample_log: 2
+semi_ar: False
+stride_length: 1
+num_strides: 1
+kv_cache: null
+trim_masked_tokens: null
+unmask_policy: 'uniform'
+noise_scale: 1.0

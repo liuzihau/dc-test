@@ -1,0 +1,13 @@
+name: dvar-tiny
+type: ddit
+hidden_size: 384
+cond_dim: 128
+length: 1024
+n_blocks: 3
+n_heads: 12
+scale_by_sigma: True
+dropout: 0.1
+tie_word_embeddings: true  # Enabled to match diffusion-vs-ar's GPT-2
+use_rope: false  # Disabled to match diffusion-vs-ar's GPT-2 (absolute pos only)
+use_gpt2_arch: false  # When true: adds biases to LayerNorm and attention projections
+lr: 1e-3  # Recommended LR for tiny models (per diffusion-vs-ar paper)

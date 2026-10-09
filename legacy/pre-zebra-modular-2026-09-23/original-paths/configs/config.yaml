@@ -1,0 +1,235 @@
+defaults:
+  - _self_
+  - /callbacks: [checkpoint_every_n_steps, checkpoint_monitor, learning_rate_monitor]
+  - /data: openwebtext
+  - /model: small
+  - /strategy: ddp
+  - /noise: loglinear
+  - /lr_scheduler: constant_warmup
+  - /algo: bd3lm
+
+mode: train  # train / ppl_eval / sample_eval
+diffusion: absorbing_state
+
+seed: 1
+
+block_size: ${model.length}
+
+loader:
+  global_batch_size: 512
+  eval_global_batch_size: ${.global_batch_size}
+  # Note: batch_size and eval_batch_size are **per machine**
+  batch_size: ${div_up:${.global_batch_size}, ${eval:${trainer.devices} * ${trainer.num_nodes}}}
+  eval_batch_size: ${div_up:${.eval_global_batch_size}, ${eval:${trainer.devices} * ${trainer.num_nodes}}}
+  num_workers: ${eval:"len(__import__('os').sched_getaffinity(0))"}
+  pin_memory: True
+
+sampling:
+  noise_removal: False
+  num_sample_batches: 1  # Total samples: `num_gpus` * `loader.eval_batch_size` * num_sample_batches
+  var_length: False
+  logdir: ./samples_${algo.name}_len${model.length}_blocksize${block_size}
+  nucleus_p: 1.0
+  first_hitting: True # should be set to true when T >> block_size
+  kv_cache: False
+
+# Recurrent memory from the immediately preceding denoiser evaluation.
+# This is independent of sampling.kv_cache, which stores completed blocks.
+step_memory:
+  enabled: False
+  # separate: legacy two sublayers; merged: one shared-QKV SDPA sublayer.
+  # Merged currently supports full-sequence MDLM only (no block prefix cache).
+  attention_mode: separate
+  # Explicit scientific recipe tag; missing in historical checkpoints = legacy.
+  # current_preserving (merged only): gate disabled, no cache-only queries.
+  # Launchers select the policy AND its settings; this tag never silently
+  # rewrites old checkpoint behavior or removes normal AdaLN residual gates.
+  merged_policy: legacy
+  # Dedicated denoising attention uses 48 spatial and 16 temporal RoPE
+  # dimensions for the 64-dimensional heads in model=small.
+  spatial_rope_dim: 48
+  temporal_rope_dim: 16
+  use_previous_kv: True
+  # When true, truncate cross-forward gradients at the preceding backbone
+  # hidden state while keeping the cache projection itself trainable.
+  detach_between_steps: True
+  # Separate: optional gate on the complete DC residual. Legacy merged:
+  # scales previous V only. current_preserving requires enabled=false so
+  # current and previous V enter the shared softmax without extra attenuation.
+  gate:
+    enabled: False
+    init: 0.1
+  pretrain:
+    enabled: False
+    # Five forwards: full mask, followed by four exact nested states.
+    # k ~ U(0.025, 0.10), x ~ U(1.5k, 0.9975 - 1.5k), and
+    # (t0,t1,t2,t3) = x + (1.5k,0.5k,-0.5k,-1.5k).
+    step_size_min: 0.025
+    step_size_max: 0.10
+    max_t0_mask_ratio: 0.9975
+    full_loss_weight: 0.05
+    t0_loss_weight: 0.10
+    t1_loss_weight: 0.20
+    t2_loss_weight: 1.00
+    t3_loss_weight: 0.70
+    teacher_token_probability: 1.0
+    source_dropout:
+      enabled: False
+      # current_preserving sets this to 0, keeping current K/V available.
+      cache_only_probability: 0.20
+      current_only_probability: 0.05
+      warmup_steps: 1_000
+    identity:
+      enabled: False
+      batch_probability: 0.25
+      margin: 0.05
+      weight: 0.10
+  rollout:
+    enabled: False
+    weight: 0.1
+    curriculum_steps: 50_000
+    forwards_start: 2
+    forwards_end: 5
+    final_mask_ratio_start: 0.9375  # 15 / 16
+    final_mask_ratio_end: 0.0625    # 1 / 16
+    teacher_token_probability: 0.85
+    nucleus_p: 0.9
+
+# Opt-in DCache-v2 extension that also propagates the detached final-layer
+# representation, marks model proposals as tentative, and learns an explicit
+# token-reliability score. Disabled configurations retain the exact v2 graph.
+dcachehooping:
+  enabled: False
+  # Five canonical forwards with all overlapping one-transition DCache
+  # backbone gradients. Independent cache-input leaves and explicit local
+  # VJPs prevent any loss from reaching two or more earlier forwards.
+  # Final-state feedback remains detached; legacy modes are unchanged.
+  adjacent_grad:
+    enabled: False
+  # Loopholing-aligned local transition with exactly two backbone forwards.
+  # This is isolated from the legacy five-forward DCachehooping objective.
+  two_forward:
+    enabled: False
+    # Sample k uniformly, then t uniformly from [0, max_first-k] and use
+    # (x_s, x_t) mask ratios (t+k, t). Exact integer masks remain nested.
+    max_first_mask_ratio: 1.0
+    first_loss_weight: 0.80
+    second_loss_weight: 1.25
+  # Required only for tentative-token or latent-mask training. Disable it for
+  # the minimal DCache + final-state self-conditioning architecture.
+  status_embedding:
+    enabled: True
+  # Sample tentative correction and latent-mask robustness from one
+  # categorical route. Their marginal rates stay 25% and 10%, but the two
+  # extra trainable transformer graphs are never retained simultaneously.
+  exclusive_auxiliary_routes: True
+  # Drop the propagated final hidden while retaining ordinary current input
+  # and DCache. This is independent of DCache query-source dropout.
+  latent_dropout_probability: 0.10
+  # Auxiliary same-state pass: replace lexical input with MASK, keep logical
+  # status and the correct detached final hidden, and omit previous DCache.
+  latent_mask_probability: 0.10
+  latent_mask_loss_weight: 0.10
+  tentative:
+    enabled: True
+    batch_probability: 0.25
+    loss_weight: 0.10
+  confidence:
+    enabled: True
+    loss_weight: 0.30
+  # On an identity batch, choose which recurrent source to contaminate.
+  identity_final_probability: 0.50
+
+# Opt-in spatial marginal prediction; only merged-attention five-state runs.
+neighbor_prediction:
+  enabled: False
+  # 0.5 * (previous-direction mean CE + next-direction mean CE) / 2.
+  weight: 0.5
+  chunk_size: 128
+  checkpoint_chunks: True
+
+training:
+  ema: 0.9999
+  antithetic_sampling: True
+  sampling_eps: 1e-3
+  coeff_clip: -1.
+  resample: False
+  sampling_eps_min: 1e-3
+  sampling_eps_max: 1.0
+  from_pretrained: null
+  eval_nll: True # always evaluate nll if block size is 1
+  # Parameter-identical vanilla control for the DCache-v2 pretraining
+  # objective. It uses the exact five-state sampler and normalized token-loss
+  # weights under step_memory.pretrain, but every state is forwarded
+  # independently through a backbone with step_memory.enabled=false.
+  objective_matched_multistate:
+    enabled: False
+
+eval:
+  checkpoint_path: ${cwd:}/checkpoints/last.ckpt  # Used to evaluate a checkpoint after training.
+  disable_ema: False
+  # Standalone PPL evaluation historically shuffled validation examples.
+  # Disable this when reproducing the fixed, unshuffled validation subset
+  # used inside the training loop.
+  shuffle_valid: True
+  perplexity_batch_size: 8
+  compute_perplexity_on_sanity: False
+  gen_ppl_eval_model_name_or_path: gpt2-large  # gpt2-large, meta-llama/Llama-2-7b-hf
+  generate_samples: False
+
+optim:
+  weight_decay: 0
+  lr: 3e-4
+  beta1: 0.9
+  beta2: 0.999
+  eps: 1e-8
+
+trainer:
+  _target_: lightning.Trainer
+  accelerator: cuda
+  num_nodes: 1
+  devices: ${device_count:}
+  accumulate_grad_batches: ${div_up:${loader.global_batch_size}, ${eval:${trainer.devices} * ${loader.batch_size} * ${trainer.num_nodes}}}
+  gradient_clip_val: 1.0
+  precision: 'bf16'
+  num_sanity_val_steps: 2
+  max_steps: 1_000_000
+  log_every_n_steps: 1_000
+  limit_train_batches: 1.0   # train on full dataset, can be used to toggle quick run
+  limit_val_batches: 1.0     # validate on full dataset, can be used to toggle quick run
+  val_check_interval: 10_000
+
+wandb:
+  project: BD3-LMs
+  notes: Block Denoising Discrete Diffusion Language Models
+  group: null
+  job_type: null
+  name: null
+  id: ${.name}_${seed}
+  tags:
+    - ${noise.type}
+    - ${data.train}
+    - ${data.valid}
+
+hydra:
+  run:
+    dir: ./outputs/${data.train}/${now:%Y.%m.%d}/${now:%H%M%S}
+  job:
+    chdir: true
+
+checkpointing:
+  # Use custom `save_dir` if, e.g., saving to S3 bucket, otherwise leave this parameter as is
+  save_dir: ${cwd:}
+  # Note: `checkpoints` path should correspond to `checkpoint_every_n_steps.dirpath`
+  resume_from_ckpt: true
+  resume_ckpt_path: ${.save_dir}/checkpoints/last.ckpt
+  # Opt-in DDP migration only: unchanged global batch, full optimizer boundary.
+  # Rewrites loaded loop/sampler counters, never the source checkpoint file.
+  allow_batch_geometry_change: false
+  # New full-data runs only: reset Lightning's live iterator to the completed
+  # DDP sample cursor, preserving the original permutation seed and geometry.
+  # Legacy behavior is unchanged unless opted in; compact resumes already reset.
+  restore_data_cursor: false
+  recovery:
+    enabled: false
+    every_seconds: 1200

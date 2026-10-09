@@ -1,0 +1,12 @@
+name: dvar-small
+type: ddit
+hidden_size: 768
+cond_dim: 128
+length: 1024
+n_blocks: 12
+n_heads: 12
+scale_by_sigma: True
+dropout: 0.1
+tie_word_embeddings: true  # Enabled to match diffusion-vs-ar's GPT-2
+use_rope: false  # Disabled to match diffusion-vs-ar's GPT-2 (absolute pos only)
+lr: 3e-4  # Recommended LR for small/medium models (per diffusion-vs-ar paper)

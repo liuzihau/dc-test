@@ -1,0 +1,25 @@
+name: difflm
+backbone: esolm_dit  # dit / dimamba / hf_dit
+parameterization: subs
+time_conditioning: False
+T: 0  # 0 (continuous time) / 1000 
+subs_masking: False
+causal_attention: False
+alpha_0: 1.0
+batch_split: 0.0
+diffusion_shuffle: True 
+diffusion_attn_mode: full
+sequential_shuffle: False
+sequential_attn_mode: causal
+loss_type: elbo
+ar_noise: False  # If True, mask rightmost tokens instead of random tokens
+next_token_prediction: False  # If True, only compute loss on the first masked token (next token)
+mtp_window_size: -1  # If > 0, only compute loss on first mtp_window_size masked tokens and restrict attention to window
+mtp_loss_ratio: null  # If provided (0 < ratio < 1), randomly keep positions in loss_mask with this probability (first mask always included)
+mtp_mode: contiguous  # If 'random', shuffle the masked tokens (except the first one)
+mtp_rebalance_loss: False  # If True, rebalance loss so first token isn't downweighted: loss = first_token + avg(remaining)
+# Shuffle controls (null = use legacy behavior based on ar_noise):
+# - ar_noise=False: shuffle both (shuffle_clean=True, shuffle_masked=True)
+# - ar_noise=True: shuffle neither (shuffle_clean=False, shuffle_masked=False)
+shuffle_clean_tokens: null  # If set, controls shuffling of clean (unmasked) tokens
+shuffle_masked_tokens: null  # If set, controls shuffling of masked tokens

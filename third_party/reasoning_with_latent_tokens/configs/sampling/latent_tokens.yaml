@@ -1,0 +1,16 @@
+# Sampling configuration for latent token generation
+# Based on gen_latent.sh script settings
+defaults:
+  - base
+  - _self_
+
+num_sample_batches: 1
+steps: 128  # Default, can be overridden per-run
+unmask_policy: 'uniform'
+fixed_tokens_per_step: True
+n_latent_tokens: 128  # Default, can be overridden per-run
+# if set to null, will be automatically enabled when possible
+trim_masked_tokens: null
+kv_cache: null
+reshuffle_masks: True
+

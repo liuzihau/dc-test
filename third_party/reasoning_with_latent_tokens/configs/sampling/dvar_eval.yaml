@@ -1,0 +1,32 @@
+# Sampling configuration matching diffusion-vs-ar evaluation
+# Use with: sampling=dvar_eval
+#
+# Key differences from esolm default:
+# 1. Uses re-masking paradigm (predict all tokens, then re-mask low-confidence)
+# 2. Uses greedy argmax for token selection (not Gumbel sampling)
+# 3. Uses stochastic position selection with decaying noise
+# 4. Default 20 diffusion steps
+
+defaults:
+  - base
+  - _self_
+
+# Core dvar settings
+steps: 20
+decoding_strategy: "stochastic0.5-linear"  # Format: "<mode>-<schedule>"
+
+# Ablation flags (for comparing decoding strategies)
+greedy_tokens: True           # True=argmax (DVAR default), False=Gumbel sampling
+stochastic_positions: True    # True=add noise to position selection (DVAR default)
+position_noise_scale: 0.5     # Noise scale for stochastic position selection
+
+# Disable esolm-specific options (not used in dvar mode)
+unmask_policy: null
+kv_cache: False
+trim_masked_tokens: False
+reshuffle_masks: False
+
+# Match dvar defaults
+num_sample_batches: 1
+noise_scale: 1.0  # Not used in dvar decoding (uses decaying noise instead)
+use_float64: False

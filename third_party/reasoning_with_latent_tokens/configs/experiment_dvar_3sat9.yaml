@@ -1,0 +1,37 @@
+# Diffusion-vs-AR 3-SAT-9 experiment config
+# Sequence length 325 (no padding) - 3sat9 max length is exactly 325
+defaults:
+  - experiment_base
+  - override /data: dvar-3sat9
+  - override /model: dvar-tiny
+  - override /lr_scheduler: cosine_warmup
+  - _self_
+
+model:
+  length: 325  # Exact max length for 3sat9 (no padding)
+
+loader:
+  batch_size: 1024
+  eval_batch_size: 1024
+  global_batch_size: 1024
+  num_workers: 0
+
+optim:
+  lr: ${model.lr}  # Uses model-specific LR: 1e-3 for tiny, 3e-4 for small/medium
+
+# Cosine decay schedule: num_training_steps = (dataset_size / batch_size) * epochs
+# 3sat9: (100000 / 1024) * 600 ≈ 58594
+# 3sat5/7: (50000 / 1024) * 600 ≈ 29297 (override if using these)
+lr_scheduler:
+  num_training_steps: 58594
+
+eval:
+  task_eval_sampling_steps: ${model.length}  # Match seq length for in-training eval
+
+trainer:
+  max_epochs: 600  # For MDM; use 300 for AR via override
+  val_check_interval: 1000
+
+callbacks:
+  checkpoint_every_n_steps:
+    every_n_train_steps: 10000

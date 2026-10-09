@@ -1,0 +1,26 @@
+name: noshuffle_mdlm
+backbone: esolm_dit
+parameterization: subs
+time_conditioning: False
+T: 0  # 0 (continuous time) / 1000
+subs_masking: False
+causal_attention: False
+alpha_0: 1.0
+batch_split: 0.0
+diffusion_attn_mode: full  # Only full attention supported
+loss_type: elbo
+# NoShuffleMDLM does not use shuffling - tokens stay in original order
+# These are kept for config compatibility but are not used by this algorithm
+shuffle_clean_tokens: False
+shuffle_masked_tokens: False
+# This is compatible with shifted_logits for matching diffusion-vs-ar behavior
+shifted_logits: False
+# Token reweighting (focal loss) - matches diffusion-vs-ar
+# Formula: alpha * (1 - exp(-loss))^gamma * loss
+token_reweighting: False  # Enable for dvar tasks
+focal_alpha: 0.25         # Focal loss alpha parameter
+focal_gamma: 1.0          # Focal loss gamma (1 for 3sat, 2 for countdown)
+# Time reweighting - matches diffusion-vs-ar trainer.py:142-147
+# Options: none (use ELBO), linear (weight = T - t, matching diffusion-vs-ar)
+time_reweighting: none
+num_diffusion_steps: 20   # T for discrete time (used with time_reweighting=linear)

@@ -1,0 +1,18 @@
+Reference implementation: HKUNLP/diffusion-vs-ar
+https://github.com/HKUNLP/diffusion-vs-ar
+Pinned revision: 6743981a4ba42062c95279e590f3991de3985581
+License: Apache-2.0 (included in LICENSE)
+
+The new reasoning/tfw.py implementation adapts the bidirectional GPT-2 wrapper,
+shifted-logit masked-token objective, and stochastic0.5-linear remasking logic
+from src/llmtuner/tuner/mdm/model.py and trainer.py. It uses the installed
+Hugging Face GPT-2 implementation, not copied GPT-2 source code.
+
+Local changes include an isolated single-GPU optimizer loop, explicit full-state
+resume contracts, global-token-count gradient accumulation, safe zero-mask
+losses, leakage-filtered prepared Zebra data, independent scoring, and additional
+labelled decoding controls. The monotonic decoder is a paper-informed
+reconstruction, not a verbatim implementation of released author code.
+
+This upstream repository was cited by Train for the Worst, Plan for the Best;
+it is not the authors' exact released Zebra training/evaluation pipeline.

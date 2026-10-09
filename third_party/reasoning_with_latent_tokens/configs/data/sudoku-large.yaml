@@ -1,0 +1,15 @@
+name: sudoku
+train: synthetic
+valid: synthetic
+tokenizer_name_or_path: synthetic
+cache_dir: null #path/to/cache
+# these do not apply to synthetic
+wrap: True
+streaming: True
+insert_train_eos: True
+insert_valid_eos: True
+###
+train_dataset_size: 100000
+validation_dataset_size: 1024
+base: 6
+vocab_size: 38

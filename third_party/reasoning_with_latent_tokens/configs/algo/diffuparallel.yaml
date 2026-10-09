@@ -1,0 +1,20 @@
+name: diffuparallel
+backbone: esolm_dit
+parameterization: ar
+time_conditioning: False
+T: 0
+loss_type: elbo
+causal_attention: False # EsoLM complains
+diffusion_attn_mode: causal
+diffusion_shuffle: True
+shuffle_warmup: 0  # number of steps to warmup shuffle_alpha from 0 to 1 (0 = no warmup)
+next_token_prediction: False  # if True, mask loss to single random position per sequence (scaled by num_tokens)
+# Positional encoding strategy for DiffuParallel:
+#   - "target": use target position for both abs_pos and rotary (original behavior)
+#   - "split_abs_source": abs_pos uses source position, rotary uses target position
+#   - "split_avg_heads": abs_pos uses (source+target)/2, rotary split by heads (half source, half target)
+#   - "qk_split": abs_pos uses source, rotary Q=target (query asks for target), K=source (key says where token is from)
+#   - "avg_rotary": abs_pos uses source, rotary Q=(q_src+q_tgt)/2, K=(k_src+k_tgt)/2
+#   - "4way_heads": abs_pos uses source, rotary with 4-way head split (all q×k combinations of source/target)
+#   - "2way_heads": abs_pos uses source, keys always use source, half heads q_source, half heads q_target
+pos_encoding_strategy: target

@@ -1,0 +1,20 @@
+mechanisms:
+  tt: {enabled: false}
+  ea: {enabled: false}
+  rm: {enabled: false}
+  np:
+    enabled: true
+    offsets: [-1, 1]
+    weights: [0.05, 0.05]
+    hidden_layers: 0
+    chunk_size: 128
+    initialization: zero
+    source_policy: target_only
+    transformer_blocks: 1
+    branch_point: before_last_block
+    shared_vocabulary_projection: false
+    branch_checkpoint: true
+    branch_dropout_seed: 314159
+objective:
+  kind: elbo
+  current_weight: 1.0

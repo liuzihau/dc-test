@@ -1,0 +1,6 @@
+# Cosine decay schedule (transformers implementation)
+# Decays LR from peak to 0 following cosine curve
+# Override num_training_steps in experiment config
+_target_: transformers.get_cosine_schedule_with_warmup
+num_warmup_steps: 0
+num_training_steps: 60000  # Override per experiment: (dataset_size / batch_size) * epochs

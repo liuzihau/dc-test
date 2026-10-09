@@ -1,0 +1,111 @@
+{
+  "scope": "random tiny real-backbone numerical wiring, not trained-model stability",
+  "cpu_only": true,
+  "seed": 20260908,
+  "dtype": "float32",
+  "torch_version": "2.7.1+cu126",
+  "layers": 4,
+  "tokens": 8,
+  "width": 8,
+  "heads": 2,
+  "vocab": 11,
+  "epsilon": 0.001,
+  "initialization": {
+    "adaLN_weight_std": 0.02,
+    "msa_mlp_gate_bias": 0.2,
+    "dcache_effective_gate": 0.1,
+    "final_norm_scale": 0.5,
+    "output_weight_std": 0.02
+  },
+  "config_tie_word_embeddings": true,
+  "weights_are_tied": false,
+  "model_source_sha256": "67c0be701d4ebd0daa6f7754f0b6e147ab70f3f13670593d09b0fcc536f0fb55",
+  "absent_final": {
+    "max_abs_directional_derivative_by_output_row_input_column": [
+      [
+        0.010035931132733822,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.009864567779004574,
+        0.016301870346069336,
+        0.0,
+        0.0
+      ],
+      [
+        0.01147389318794012,
+        0.01090764906257391,
+        0.0075101847760379314,
+        0.0
+      ],
+      [
+        0.012710689567029476,
+        0.012144445441663265,
+        0.007197260390967131,
+        0.015929341316223145
+      ]
+    ],
+    "max_strict_upper": 0.0,
+    "diagonal": [
+      0.010035931132733822,
+      0.016301870346069336,
+      0.0075101847760379314,
+      0.015929341316223145
+    ],
+    "last_hidden_sensitivity": [
+      0.0029355285223573446,
+      0.0033751127775758505,
+      0.0023208558559417725,
+      0.003831460839137435
+    ],
+    "detach_flag_max_value_difference": 0.0
+  },
+  "fixed_final": {
+    "max_abs_directional_derivative_by_output_row_input_column": [
+      [
+        0.003986060619354248,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.004230998456478119,
+        0.003576278453692794,
+        0.0,
+        0.0
+      ],
+      [
+        0.0026002523954957724,
+        0.005608656909316778,
+        0.0023096799850463867,
+        0.0
+      ],
+      [
+        0.00296533084474504,
+        0.00426173210144043,
+        0.0024139881134033203,
+        0.00825151801109314
+      ]
+    ],
+    "max_strict_upper": 0.0,
+    "diagonal": [
+      0.003986060619354248,
+      0.003576278453692794,
+      0.0023096799850463867,
+      0.00825151801109314
+    ],
+    "last_hidden_sensitivity": [
+      0.002618878846988082,
+      0.0044405460357666016,
+      0.002078711986541748,
+      0.004380941390991211
+    ],
+    "detach_flag_max_value_difference": 0.0
+  },
+  "final_input_to_first_bank": 0.22079049050807953,
+  "two_iterations_joint_feedback_last_bank_to_first_bank": 0.0069439406506717205,
+  "two_iterations_frozen_feedback_last_bank_to_first_bank": 0.0,
+  "status": "passed"
+}

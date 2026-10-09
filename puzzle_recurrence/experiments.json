@@ -1,0 +1,102 @@
+{
+  "tasks": [
+    "sudoku",
+    "zebra"
+  ],
+  "comparisons": [
+    [
+      "mdm_np",
+      "mdm"
+    ],
+    [
+      "trajectory_recurrent",
+      "trajectory_attention"
+    ]
+  ],
+  "main_states": 3,
+  "state_order": [
+    "t+k",
+    "t",
+    "t-k"
+  ],
+  "weights": [
+    0.25,
+    1.0,
+    0.25
+  ],
+  "weight_sum": 1.5,
+  "gradient_horizon": 1,
+  "final_hidden_feedback": false,
+  "identity_loss": false,
+  "claim": "Neighbor prediction and connected recurrence provide spatial and temporal routes for supervising predictive context representations.",
+  "claim_status": "design hypothesis; new quality experiments not yet run",
+  "merge_enabled": false,
+  "merge_gate": "Independent NP and RM ablations improve their respective controls before a merged study",
+  "future_merge_control": "trajectory_attention + NP, without RM",
+  "variants": [
+    {
+      "task": "sudoku",
+      "variant": "mdm",
+      "parameters": 19010063,
+      "vocab_size": 15,
+      "length": 192,
+      "source_train_on_all_tokens": false
+    },
+    {
+      "task": "sudoku",
+      "variant": "mdm_np",
+      "parameters": 19025453,
+      "vocab_size": 15,
+      "length": 192,
+      "source_train_on_all_tokens": false
+    },
+    {
+      "task": "sudoku",
+      "variant": "trajectory_attention",
+      "parameters": 25829397,
+      "vocab_size": 15,
+      "length": 192,
+      "source_train_on_all_tokens": false
+    },
+    {
+      "task": "sudoku",
+      "variant": "trajectory_recurrent",
+      "parameters": 25829397,
+      "vocab_size": 15,
+      "length": 192,
+      "source_train_on_all_tokens": false
+    },
+    {
+      "task": "zebra",
+      "variant": "mdm",
+      "parameters": 19117592,
+      "vocab_size": 24,
+      "length": 384,
+      "source_train_on_all_tokens": true
+    },
+    {
+      "task": "zebra",
+      "variant": "mdm_np",
+      "parameters": 19142216,
+      "vocab_size": 24,
+      "length": 384,
+      "source_train_on_all_tokens": true
+    },
+    {
+      "task": "zebra",
+      "variant": "trajectory_attention",
+      "parameters": 25936926,
+      "vocab_size": 24,
+      "length": 384,
+      "source_train_on_all_tokens": true
+    },
+    {
+      "task": "zebra",
+      "variant": "trajectory_recurrent",
+      "parameters": 25936926,
+      "vocab_size": 24,
+      "length": 384,
+      "source_train_on_all_tokens": true
+    }
+  ]
+}

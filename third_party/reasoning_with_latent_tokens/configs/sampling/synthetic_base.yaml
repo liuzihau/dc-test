@@ -1,0 +1,20 @@
+# Sampling configuration for synthetic data generation
+# Based on latent_tokens.yaml but without n_latent_tokens
+defaults:
+  - base
+  - _self_
+
+num_sample_batches: 1
+steps: 128  # Default, can be overridden per-run
+unmask_policy: 'uniform'
+fixed_tokens_per_step: True
+# if set to null, will be automatically enabled when possible
+trim_masked_tokens: null
+kv_cache: null
+reshuffle_masks: False
+noise_scale: 1.0
+
+# Ablation flags (for comparing decoding strategies)
+greedy_tokens: False          # False=Gumbel sampling (ESOLM default), True=argmax
+stochastic_positions: False   # False=deterministic (ESOLM default), True=add noise
+position_noise_scale: 0.5     # Noise scale for stochastic position selection

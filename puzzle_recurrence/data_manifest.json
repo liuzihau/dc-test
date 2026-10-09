@@ -1,0 +1,47 @@
+{
+  "format": "original author puzzle files",
+  "files": [
+    {
+      "name": "Sudoku-train-data.npy",
+      "bytes": 586450603,
+      "sha256": "3f829eef34b4c403de5a25f4e1bde0b2651e75a82029a45944270fd7a7bf441d"
+    },
+    {
+      "name": "Sudoku-test-data.npy",
+      "bytes": 32500128,
+      "sha256": "f13f537637ac64fb8f4cd5f5c6343a196472c21cd6e596428ed514b9e558ff3a"
+    },
+    {
+      "name": "zebra-train-data.pkl",
+      "bytes": 1118186790,
+      "sha256": "ad16703895255af934b6bb6266454a2b6ab06ad2a060a6298ca3431de247fcb7"
+    },
+    {
+      "name": "zebra-test-data.pkl",
+      "bytes": 73678243,
+      "sha256": "e9ddfee3714aba8a5995d77e4fb5782e0d16cbfd7c5f6087396b1cfc5513c007"
+    }
+  ],
+  "cached_files": [
+    {
+      "path": "author-sudoku/sudoku_puzzle_v2_Sudoku-test-data_ds100000_sl192_vs14_puzzleTrue.npz",
+      "bytes": 11142891,
+      "sha256": "a40b6ffad529ff42e557132bd9ecbef514befa2c40240b70c64b8832b922c9bd"
+    },
+    {
+      "path": "author-sudoku/sudoku_puzzle_v2_Sudoku-train-data_ds1804463_sl192_vs14_puzzleTrue.npz",
+      "bytes": 201047321,
+      "sha256": "66425ceba1661682cba07ae38adc2cad4a696f9d762b8e6849c0d64568314020"
+    },
+    {
+      "path": "author-zebra/zebra_zebra-test-data_ds100000_sl384_vs23.npz",
+      "bytes": 11136449,
+      "sha256": "fadf7f01be294a3cd50408ec53531e3bfb5629d03fd5560ae4e70d630f1ff098"
+    },
+    {
+      "path": "author-zebra/zebra_zebra-train-data_ds1499933_sl384_vs23.npz",
+      "bytes": 166927772,
+      "sha256": "50c6bcfba2a9aafc90992afd78cd53deea46c4e8a2572f325604f9a051d3932f"
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+mechanisms:
+  tt:
+    enabled: true
+  ea:
+    enabled: true
+  rm:
+    enabled: true
+  np:
+    enabled: false
+    offsets:
+    - -1
+    - 1
+    weights:
+    - 0.25
+    - 0.25
+    hidden_layers: 0
+    boundary_tokens:
+    - <SEP>
+objective:
+  kind: elbo
+  current_weight: 1.0
+puzzle_recurrence:
+  schema: puzzle_three_state_adjacent_kv_v1
+  loss_weights:
+  - 0.25
+  - 1.0
+  - 0.25
+  k_min: 0.025
+  k_max: 0.1
+  gate_init: 0.1
+  gradient_horizon: 1
+  final_hidden_feedback: false
+  identity_loss: false
+  debug_graph: false
+  source_dropout:
+    enabled: true
+    previous_only_probability: 0.2
+    current_only_probability: 0.05
+    warmup_steps: 1000

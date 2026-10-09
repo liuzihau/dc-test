@@ -1,0 +1,38 @@
+# Diffusion-vs-AR Countdown experiment config (cd3, cd4, cd5)
+# MDM: 600 epochs, AR: 40 epochs
+# Paper settings: LR 3e-4, cosine decay, batch size 1024
+# NOTE: Paper uses standard model (12 layers), not tiny
+defaults:
+  - experiment_base
+  - override /data: dvar-cd4  # Override per variant: dvar-cd3, dvar-cd4, dvar-cd5
+  - override /model: dvar-tiny
+  - override /lr_scheduler: cosine_warmup
+  - _self_
+
+model:
+  length: 64
+
+loader:
+  batch_size: 1024  # Per-GPU batch size (no gradient accumulation needed for tiny model)
+  eval_batch_size: 1024
+  global_batch_size: 1024
+  num_workers: 0
+
+optim:
+  lr: ${model.lr}  # Uses model-specific LR: 1e-3 for tiny, 3e-4 for small/medium
+
+# Cosine decay schedule: num_training_steps = (dataset_size / batch_size) * epochs
+# cd3/4/5: (500000 / 1024) * 600 ≈ 292969
+lr_scheduler:
+  num_training_steps: 292969
+
+eval:
+  task_eval_sampling_steps: ${model.length}  # Match seq length for in-training eval
+
+trainer:
+  max_epochs: 600  # For MDM; use 40 for AR via override
+  val_check_interval: 1000
+
+callbacks:
+  checkpoint_every_n_steps:
+    every_n_train_steps: 10000

@@ -1,0 +1,28 @@
+# Sudoku Conditional dataset configuration
+# Generates puzzle-solution pairs procedurally without requiring unique solutions
+name: sudoku-conditional
+train: synthetic
+valid: synthetic
+tokenizer_name_or_path: sudoku-conditional
+cache_dir: null
+# these do not apply to synthetic
+wrap: True
+streaming: True
+insert_train_eos: True
+insert_valid_eos: True
+###
+# Dataset sizes
+train_dataset_size: 100000
+validation_dataset_size: 1024
+
+# Vocabulary config
+# Tokens: 0 (PAD), 1-9 (digits 1-9), 10 (MASK), 11 (SEP), 12 (BOS), 13 (EOS)
+vocab_size: 14
+
+# Puzzle generation parameters
+# target_givens: can be a single int or [min, max] for uniform sampling
+target_givens: [30, 40]     # Uniform range of given cells
+max_count_solutions: 10     # Maximum number of solutions to count per puzzle
+symmetry: none              # "none" or "rotational"
+require_unique: False       # If True, only keep puzzles with unique solutions
+skip_solution_count: True   # Skip counting solutions (faster, default True)

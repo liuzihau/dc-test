@@ -1,0 +1,21 @@
+# Diffusion-vs-AR 3-SAT-7 dataset
+# 3-SAT satisfiability problems with 7 true variables in output
+name: dvar-3sat7
+train: synthetic
+valid: synthetic
+tokenizer_name_or_path: dvar-3sat
+cache_dir: null  # Set via environment
+
+wrap: True
+streaming: True
+insert_train_eos: True
+insert_valid_eos: True
+
+# Data file paths (relative to project root)
+train_data_path: diffusion-vs-ar/data/3sat7_train.jsonl
+valid_data_path: diffusion-vs-ar/data/3sat7_test.jsonl
+
+# Vocabulary config (25 tokens)
+# Tokens: PAD(0), BOS(1), EOS(2), SEP(3), '/'(4), ','(5),
+#         0-9(6-15), b-j(16-24)
+vocab_size: 25

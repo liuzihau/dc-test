@@ -1,0 +1,12 @@
+name: dvar-tiny-deep
+type: ddit
+hidden_size: 384
+cond_dim: 128
+length: 1024
+n_blocks: 6
+n_heads: 12
+scale_by_sigma: True
+dropout: 0.1
+tie_word_embeddings: true  # Enabled to match diffusion-vs-ar's GPT-2
+use_rope: false  # Disabled to match diffusion-vs-ar's GPT-2 (absolute pos only)
+lr: 3e-4  # Lower LR for deeper model

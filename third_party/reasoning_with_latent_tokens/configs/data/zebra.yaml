@@ -1,0 +1,27 @@
+# Zebra Puzzle (Einstein's Riddle style) dataset configuration
+# Loads pre-generated logic puzzles with symbolic clues
+name: zebra
+train: synthetic
+valid: synthetic
+tokenizer_name_or_path: zebra
+cache_dir: null
+# these do not apply to synthetic
+wrap: True
+streaming: True
+insert_train_eos: True
+insert_valid_eos: True
+###
+# Paths to data files
+# Dataset sizes are automatically determined from the data files (uses all available data)
+# These paths are set via ESOLM_PUZZLE_DIR environment variable in train_master.sh/gen_master.sh
+train_data_path: null
+valid_data_path: null
+
+# Vocabulary size is automatically determined by scanning the dataset
+# to collect all unique tokens. This ensures all tokens are covered.
+# The vocab_size field below is informational; actual size depends on data.
+vocab_size: 23  # Auto-determined from data
+
+# Optional: max tokens for clues section (truncates long clue lists)
+# max_clue_tokens: 200
+

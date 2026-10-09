@@ -1,0 +1,62 @@
+defaults:
+  - config  # Inherit all settings from config.yaml
+  - override /data: synthetic
+  - override /algo: esolm
+  - override /sampling: base  # Import sampling config
+  - _self_  # Allow overrides
+
+# Override/add specific config values
+data:
+  insert_train_special: false
+  insert_valid_special: false
+
+algo:
+  alpha_0: 1.0
+  batch_split: 1.0
+  shifted_logits: false  # When true, position i-1's output predicts position i (diffusion-vs-ar style)
+  # do not override the rest; they are set in the algo config
+
+model:
+  length: 1024
+  absolute_pos_embed: true
+  disable_adaln: true
+
+loader:
+  batch_size: 256
+  eval_batch_size: 256
+
+
+# Notes on what these mean:
+# a global step is a pass of global_batch_size rows of data
+# a global step is equal to accumulate_grad_batches small steps 
+# val/* is reported every val_check_interval small steps = (val_check_interval / accumulate_grad_batches) global steps
+# trainer/* is reported every log_every_n_steps global steps
+# train/* is reported every EPOCH of data. 
+trainer:
+  val_check_interval: 10000
+  log_every_n_steps: 1000
+  max_epochs: 10
+
+eval:
+  generate_samples: false
+  compute_generative_perplexity: false
+
+checkpointing:
+  resume_from_ckpt: false
+
+wandb:
+  project: Diffusion-Synthetic
+
+# this is in terms of global steps
+callbacks:
+  checkpoint_every_n_steps:
+    every_n_train_steps: 2000
+
+# These can be overridden per-run:
+# - data.cache_dir
+# - hydra.run.dir  
+# - checkpointing.save_dir
+# - wandb.name
+# - algo.diffusion_attn_mode (mixed/full)
+# - any other specific overrides
+

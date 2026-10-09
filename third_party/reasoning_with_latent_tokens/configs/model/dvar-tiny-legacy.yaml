@@ -1,0 +1,14 @@
+# Legacy dvar-tiny config (before architecture alignment with diffusion-vs-ar)
+# Use this for evaluating models trained before the RoPE/weight-tying changes
+name: dvar-tiny-legacy
+type: ddit
+hidden_size: 384
+cond_dim: 128
+length: 1024
+n_blocks: 3
+n_heads: 12
+scale_by_sigma: True
+dropout: 0.1
+tie_word_embeddings: false  # Original setting (no weight tying)
+use_rope: true  # Original setting (RoPE enabled)
+lr: 1e-3

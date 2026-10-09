@@ -4,6 +4,7 @@
 test/
 outputs/
 /archive/
+/legacy/reasoning-zebra-pre-author-2026-09-22/artifacts/
 /results/generated/
 .tmp/
 2503.09573v3.pdf
@@ -188,3 +189,22 @@ logs/
 /exports/
 *.ckpt
 *.arrow
+
+# Active entrypoint wrappers are source, despite the historical run.sh rule.
+!owt/run.sh
+!sudoku/run.sh
+!zebra/run.sh
+
+# Runtime state and data must not be uploaded as source.
+/.tmux/
+*.pt
+*.pth
+*.safetensors
+*.npy
+*.npz
+*.pkl
+*.pickle
+*.zip
+legacy/**/artifacts/
+
+*.jsonl

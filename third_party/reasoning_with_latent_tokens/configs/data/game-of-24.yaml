@@ -1,0 +1,33 @@
+# Game of 24 dataset configuration
+# Arithmetic puzzles: solve for a target number using operations on input numbers
+name: game-of-24
+train: synthetic
+valid: synthetic
+tokenizer_name_or_path: game-of-24
+cache_dir: null  # Set via train_master.sh to ${CACHE_DIR}
+# these do not apply to synthetic
+wrap: True
+streaming: True
+insert_train_eos: True
+insert_valid_eos: True
+###
+# Dataset sizes - data is programmatically generated and cached
+# Use the sizes from the pre-generated cache files
+train_dataset_size: 443951
+validation_dataset_size: 10000
+
+# Seeds for reproducibility (must match the cached data)
+train_seed: 42
+validation_seed: 12345
+
+# Vocabulary config (20 tokens)
+# Tokens: PAD(0), BOS(1), EOS(2), SEP(3), digits 0-9(4-13), +,-,*,/(14-17), =(18), NEG(19)
+vocab_size: 20
+
+# Dataset generation config
+num_numbers: [3, 4, 5]  # Variable number of input numbers per puzzle
+number_range: [1, 13]
+target_range: [0, 100]
+operators: ["+", "-", "*", "/"]
+integer_only: True
+

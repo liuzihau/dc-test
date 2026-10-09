@@ -1,0 +1,39 @@
+# Diffusion-vs-AR Path Finding experiment config
+# MDM: 100 epochs, AR: 200 epochs
+# Paper settings: LR 1e-3, cosine decay, batch size 1024
+# NOTE: Paper uses max_samples=50000 (not full 1M dataset)
+defaults:
+  - experiment_base
+  - override /data: dvar-path
+  - override /model: dvar-tiny
+  - override /lr_scheduler: cosine_warmup
+  - _self_
+
+model:
+  length: 75
+
+loader:
+  batch_size: 1024  # Per-GPU batch size (no gradient accumulation needed for tiny model)
+  eval_batch_size: 1024
+  global_batch_size: 1024
+  num_workers: 0
+
+optim:
+  lr: ${model.lr}  # Uses model-specific LR: 1e-3 for tiny, 3e-4 for small/medium
+
+# Cosine decay schedule: num_training_steps = (dataset_size / batch_size) * epochs
+# path (full 1M): (1000000 / 1024) * 100 ≈ 97656
+# path (paper's 50k): (50000 / 1024) * 100 ≈ 4883
+lr_scheduler:
+  num_training_steps: 97656  # Using full dataset; set to 4883 if limiting to 50k
+
+eval:
+  task_eval_sampling_steps: ${model.length}  # Match seq length for in-training eval
+
+trainer:
+  max_epochs: 100  # For MDM; use 200 for AR via override
+  val_check_interval: 1000
+
+callbacks:
+  checkpoint_every_n_steps:
+    every_n_train_steps: 10000

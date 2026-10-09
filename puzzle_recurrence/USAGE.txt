@@ -1,0 +1,118 @@
+Sudoku and Zebra: four separate ablations
+
+mdm                  Original author-aligned baseline.
+mdm_np               Original baseline + two linear neighbor heads.
+trajectory_attention Three states + extra attention; no history is read.
+trajectory_recurrent The matched attention model + shifted recurrent KV.
+
+Comparisons:
+  mdm_np vs mdm
+  trajectory_recurrent vs trajectory_attention
+
+Three-state training:
+  Mask ratios execute in order t+k -> t -> t-k.
+  One ranking gives nested masks. Reveals use correct teacher tokens.
+  Weights are [0.25, 1.00, 0.25], divided by 1.50.
+  k is sampled in [0.025, 0.10]. Center t is sampled inside valid bounds.
+  Counts are rounded and constrained to three strictly decreasing positive
+  values. The first state retains at least one revealed eligible token.
+  Requested and realized mask ratios are both recorded.
+  Sudoku preserves the author's solution-loss mask.
+  Zebra preserves the author's all-valid-token training policy.
+
+Memory:
+  Extra attention precedes each unchanged author transformer block.
+  Both matched models have identical extra parameters, gates and attention
+  tensor shapes. History slots exist in both arms.
+  The attention control masks every history slot before softmax.
+  RM reads previous-pass KV written from the completed corresponding depth.
+  Nonfinal writers reuse the next extra-attention entry projection.
+  The final depth has a separate KV writer, retained in both models.
+  RoPE has token-position and previous/current-age coordinates 0/1;
+  64-dimensional heads use a 48/16 spatial/temporal split.
+  There is no final-hidden input feedback.
+  Each recurrent loss has exactly one backward transition. Cache-input
+  leaves and explicit frozen cotangents prevent two-hop backbone credit.
+  Compiled backward buffer donation is disabled in both trajectory arms.
+
+Source dropout:
+  At the second and third states, masked queries use joint (75%),
+  previous-only (20%) or current-only (5%) extra-attention sources after warmup.
+  Previous-only probability ramps over 1,000 optimizer steps.
+  Both arms use the same source-policy draws. A previous-only control query
+  has no available extra-attention source, so its extra residual is zero.
+  Ordinary author attention and current input remain active.
+  Validation and generation turn off source dropout.
+  Identity supervision is disabled by the user's decision: exactly three
+  supervised training forwards, with no shuffled-memory reference pass.
+
+Evaluation:
+  Normal val/nll keeps the author's single-canvas, no-history ELBO monitor.
+  Separate val/trajectory_objective and three masked-token accuracy metrics
+  measure the shared three-state evaluation. They are conditional diagnostics,
+  not additional likelihood bounds. Validation diagnostics preserve RNG.
+  Full generation uses the original author sampler and its candidate policy.
+  Memory is stored in original position order and reindexed when the sampler
+  moves physical token slots. It resets at the start/end of each generation.
+  Completed-puzzle generation accuracy is the main quality comparison for RM.
+
+Safe configuration checks (do not train):
+  /home/tliu0205/miniconda3/envs/dcache/bin/python -m puzzle_recurrence.entrypoint --task sudoku --variant trajectory_attention
+  /home/tliu0205/miniconda3/envs/dcache/bin/python -m puzzle_recurrence.entrypoint --task zebra --variant trajectory_recurrent
+
+Explicit training, only when wanted (select the physical GPU IDs on that server):
+  CUDA_VISIBLE_DEVICES=2,3 /home/tliu0205/miniconda3/envs/dcache/bin/python -m puzzle_recurrence.entrypoint --task sudoku --variant trajectory_attention --stage train
+  CUDA_VISIBLE_DEVICES=2,3 /home/tliu0205/miniconda3/envs/dcache/bin/python -m puzzle_recurrence.entrypoint --task sudoku --variant trajectory_recurrent --stage train
+  Replace --task sudoku with --task zebra for Zebra; --variant mdm or mdm_np
+  selects the other arms. Per-device locks prevent overlapping selections. Disjoint GPU pairs can run concurrently.
+  Default microbatch32, two GPUs, global batch512, accumulation8. Dataset and
+  sampler settings come from the existing task entrypoints. Model width512,
+  six layers, eight heads; length192 for Sudoku and384 for Zebra.
+  Default budgets: Sudoku70,500 updates; Zebra117,200 updates. These are setup
+  defaults, not jobs started by this implementation task.
+  Existing experiment directories and old checkpoints are preserved.
+  Resume only this new experiment's checkpoint, with identical batch policy.
+  Add --resume /absolute/checkpoint.ckpt and a later --target-steps value.
+  Per-rank RNG and consumed rows are saved, including partial epoch endings.
+
+Explicit generation evaluation:
+  CUDA_VISIBLE_DEVICES=2,3 /home/tliu0205/miniconda3/envs/dcache/bin/python -m puzzle_recurrence.entrypoint --task sudoku --variant trajectory_recurrent --stage evaluate --resume /absolute/checkpoint.ckpt
+
+Checks:
+  CUDA_VISIBLE_DEVICES='' /home/tliu0205/miniconda3/envs/dcache/bin/python -m pytest puzzle_recurrence/test_models.py zebra/test_neighbor.py -q
+  GPU correctness helper performs forward/backward only, zero optimizer updates:
+  CUDA_VISIBLE_DEVICES=2,3 /home/tliu0205/miniconda3/envs/dcache/bin/python -m puzzle_recurrence.gpu_check --microbatch 32 --output /tmp/puzzle-gpu-check.json
+
+Scope:
+  The author source tree and previous Sudoku/Zebra runs are unchanged.
+  No benchmark training was launched. NP+RM merging is deferred until the
+  separate ablations support it. The next merged study also needs a
+  trajectory+attention+NP control to separate NP gain from recurrence gain.
+
+Working formulation:
+  "Neighbor prediction and connected recurrence provide spatial and temporal
+  routes for supervising predictive context representations."
+  This is the proposed design interpretation; new performance results are pending.
+
+New four-GPU server:
+  git clone git@github.com:liuzihau/dc-test.git
+  cd dc-test
+  conda create -n dcache python=3.9 -y
+  conda activate dcache
+  bash puzzle_recurrence/setup_server.sh
+  bash puzzle_recurrence/transfer_data.sh USER@SOURCE_HOST
+  python -m puzzle_recurrence.run_pair --tasks sudoku zebra --dry-run
+  python -m puzzle_recurrence.run_pair --tasks sudoku zebra --evaluate
+
+The pair runner uses GPUs0,1 for trajectory_attention and GPUs2,3 for
+trajectory_recurrent. It waits for both Sudoku arms before starting Zebra. --evaluate also runs
+the final completed-puzzle generation evaluations in separate evaluation folders.
+Use --tasks sudoku or --tasks zebra for one dataset only.
+Use --attention-gpus 0,1 --recurrent-gpus 2,3 to choose other disjoint pairs.
+Logs: outputs/TASK/three-state-ablation/trajectory_attention.log and
+      outputs/TASK/three-state-ablation/trajectory_recurrent.log.
+Run in tmux or screen to survive terminal disconnection. Add --resume after
+an interruption; an existing output folder requires its latest checkpoint.
+Transfer also copies the prepared author caches, avoiding concurrent cache creation
+on the new server. Raw data, caches, model checkpoints, and generated results are
+excluded from Git.

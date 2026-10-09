@@ -1,0 +1,14 @@
+# Author baseline. All four research mechanisms have separate namespaces.
+mechanisms:
+  tt: {enabled: false}
+  ea: {enabled: false}
+  rm: {enabled: false}
+  np:
+    enabled: false
+    offsets: [-1, 1]
+    weights: [0.25, 0.25]
+    hidden_layers: 0
+    boundary_tokens: [CLUE_END, ANSWER]
+objective:
+  kind: elbo
+  current_weight: 1.0

@@ -1,0 +1,11 @@
+name: ye_tiny
+type: ddit
+hidden_size: 384
+cond_dim: 128
+length: 512
+n_blocks: 3
+n_heads: 12
+scale_by_sigma: True
+dropout: 0.1
+tie_word_embeddings: False
+

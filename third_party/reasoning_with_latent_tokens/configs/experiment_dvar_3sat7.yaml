@@ -1,0 +1,35 @@
+# Diffusion-vs-AR 3-SAT-7 experiment config
+# Sequence length 285 (no padding) - 3sat7 max length is exactly 285
+defaults:
+  - experiment_base
+  - override /data: dvar-3sat7
+  - override /model: dvar-tiny
+  - override /lr_scheduler: cosine_warmup
+  - _self_
+
+model:
+  length: 285  # Exact max length for 3sat7 (no padding)
+
+loader:
+  batch_size: 1024
+  eval_batch_size: 1024
+  global_batch_size: 1024
+  num_workers: 0
+
+optim:
+  lr: ${model.lr}
+
+# 3sat7: (50000 / 1024) * 600 ≈ 29297
+lr_scheduler:
+  num_training_steps: 29297
+
+eval:
+  task_eval_sampling_steps: ${model.length}
+
+trainer:
+  max_epochs: 600
+  val_check_interval: 1000
+
+callbacks:
+  checkpoint_every_n_steps:
+    every_n_train_steps: 10000
