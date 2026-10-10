@@ -71,7 +71,10 @@ Explicit training, only when wanted (select the physical GPU IDs on that server)
   Default budgets: Sudoku70,500 updates; Zebra117,200 updates. These are setup
   defaults, not jobs started by this implementation task.
   Existing experiment directories and old checkpoints are preserved.
-  Resume only this new experiment's checkpoint, with identical batch policy.
+  Resume only this new experiment's checkpoint. Global batch and GPU count stay fixed.
+An explicit microbatch change is allowed only at a completed data-epoch boundary.
+The pair runner delays the change until both arms are at the same checkpoint
+step; it does not rewind an arm that is ahead.
   Add --resume /absolute/checkpoint.ckpt and a later --target-steps value.
   Per-rank RNG and consumed rows are saved, including partial epoch endings.
 
@@ -113,6 +116,36 @@ Logs: outputs/TASK/three-state-ablation/trajectory_attention.log and
       outputs/TASK/three-state-ablation/trajectory_recurrent.log.
 Run in tmux or screen to survive terminal disconnection. Add --resume after
 an interruption; an existing output folder requires its latest checkpoint.
+Generation evaluates 1,280 puzzles every three epochs, plus the final epoch.
+Sudoku: 3,6,9,12,15,18,20. Zebra: 3,6,...,39,40.
+The same puzzle, row and cell accuracies as MDM/MDM-NP are saved in
+generation_history.csv, with each generation's samples and complete.json.
+The standard author validation and three-state token metrics remain separate.
 Transfer also copies the prepared author caches, avoiding concurrent cache creation
 on the new server. Raw data, caches, model checkpoints, and generated results are
 excluded from Git.
+
+Live plots (no new model forward passes):
+  python -m puzzle_recurrence.monitor --tasks sudoku zebra
+  python -m puzzle_recurrence.monitor --tasks sudoku zebra --watch --interval 60
+  Figures: outputs/TASK/three-state-ablation/performance.png,
+           accuracy_vs_epoch.png, row_cell_accuracy.png (also PDF).
+  Snapshot: outputs/TASK/three-state-ablation/snapshot.json.
+  Training/validation plots start at epoch1 by default; use --start-epoch 0
+  to include the initial trajectory. Use --output-root for custom runs.
+
+Double the microbatch without changing effective batch:
+  Let the existing queue save an epoch checkpoint, then stop it with Ctrl+C.
+  git pull --ff-only
+  python -m puzzle_recurrence.run_pair --tasks sudoku zebra --resume --microbatch 64 --allow-microbatch-change
+  Global batch512 stays fixed: per-GPU microbatch32->64, accumulation8->4.
+  Model, optimizer, EMA, scheduler, sampler cursor and RNG are restored.
+  Subsequent corruption grouping differs; this is not bitwise replay of the
+  old microbatch run. A batch-change receipt records the transition.
+  Full-size batch64 forward/backward checks passed on RTX3090; Zebra RM used
+  about21GiB before optimizer/DDP overhead. Smaller GPUs may need batch32.
+
+Old queues had final-only evaluation and kept only recent checkpoints.
+Missing older three-epoch checkpoints cannot produce retrospective metrics.
+The updated queue records only exact checkpoint epochs; later checkpoints
+are never substituted for an earlier epoch's accuracy.

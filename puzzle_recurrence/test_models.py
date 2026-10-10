@@ -252,3 +252,32 @@ def test_clean_targets_cannot_use_reserved_mask_class():
     model=make();b=batch(model);b['input_ids'][:,7]=model.mask_index
     with pytest.raises(ValueError,match='reserved MASK'):
         model._loss(b['input_ids'],b['attention_mask'],train_mode=True,loss_mask=b['loss_mask'])
+
+
+def test_actual_epoch_boundary_batch_change_preserves_full_training_state(tmp_path):
+    class TwelveRows(Rows):
+        def __len__(self):return 12
+    L.seed_everything(21);original=make()
+    original.config.loader.global_batch_size=8;original.config.trainer.accumulate_grad_batches=4
+    trainer=L.Trainer(accelerator='cpu',devices=1,max_steps=2,max_epochs=-1,accumulate_grad_batches=4,
+        logger=False,enable_checkpointing=False,enable_progress_bar=False,enable_model_summary=False,limit_val_batches=0)
+    trainer.fit(original,DataLoader(TwelveRows(original),batch_size=2))
+    checkpoint=str(tmp_path/'boundary.ckpt');trainer.save_checkpoint(checkpoint)
+    saved=torch.load(checkpoint,weights_only=False)
+    assert saved['puzzle_data_cursor']['cursor']['rows']==0
+    restored=make();restored.config.loader.batch_size=4;restored.config.loader.global_batch_size=8
+    restored.config.trainer.accumulate_grad_batches=2;restored.config.puzzle_allow_microbatch_change=True
+    class CheckRestoration(Callback):
+        def on_train_start(self,tr,module):
+            assert tr.global_step==2
+            assert module.ema.num_updates==saved['ema']['num_updates']
+            assert tr.lr_scheduler_configs[0].scheduler.last_epoch==saved['lr_schedulers'][0]['last_epoch']
+            for name,value in module.state_dict().items():torch.testing.assert_close(value,saved['state_dict'][name],rtol=0,atol=0)
+            assert {int(v['step']) for v in tr.optimizers[0].state.values()}=={2}
+    resumed=L.Trainer(accelerator='cpu',devices=1,max_steps=3,max_epochs=-1,accumulate_grad_batches=2,
+        logger=False,enable_checkpointing=False,enable_progress_bar=False,enable_model_summary=False,limit_val_batches=0,
+        callbacks=[CheckRestoration()])
+    resumed.fit(restored,DataLoader(TwelveRows(restored),batch_size=4),ckpt_path=checkpoint)
+    assert resumed.global_step==3 and restored.ema.num_updates==3
+    assert restored._data_epoch==1 and restored._data_rows==8
+    assert restored._batch_change['new_policy']['batch']==4

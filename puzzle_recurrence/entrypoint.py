@@ -24,6 +24,7 @@ def build_config(args):
     config=configure(config,args.variant)
     recipe=OmegaConf.load(args.recipe)
     config.puzzle_recurrence=recipe.puzzle_recurrence
+    config.puzzle_allow_microbatch_change=bool(getattr(args,'allow_microbatch_change',False))
     validate_config(config)
     config.callbacks.trajectory_metrics=dict(_target_='puzzle_recurrence.metrics.TrajectoryMetrics',run=str(args.run))
     return config,upstream
@@ -37,6 +38,7 @@ def main():
     parser.add_argument('--run',type=Path);parser.add_argument('--recipe',type=Path)
     parser.add_argument('--resume',type=Path);parser.add_argument('--devices',type=int,default=2)
     parser.add_argument('--microbatch',type=int,default=32)
+    parser.add_argument('--allow-microbatch-change',action='store_true')
     parser.add_argument('--workers',type=int,default=4);parser.add_argument('--seed',type=int,default=1)
     parser.add_argument('--target-steps',type=int);parser.add_argument('--checkpoint-interval',type=int)
     parser.add_argument('--eval-batches',type=int,default=10);parser.add_argument('--eval-batch-size',type=int,default=128)

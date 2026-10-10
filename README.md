@@ -14,7 +14,10 @@ disabled. The NP/RM merged trial is deferred.
 
 For a new four-GPU server, use [the setup and run commands](puzzle_recurrence/USAGE.txt).
 `python -m puzzle_recurrence.run_pair --tasks sudoku zebra` runs attention on GPUs
-0,1 and recurrence on GPUs 2,3, then moves to the next dataset. Existing outputs
+0,1 and recurrence on GPUs 2,3. It evaluates 1,280 completed puzzles every three
+epochs and at the final epoch, then moves to the next dataset. Use
+`python -m puzzle_recurrence.monitor --tasks sudoku zebra` to refresh live
+performance figures from the saved metrics. Existing outputs
 are preserved; resume explicitly with `--resume`. Dataset files and checkpoints
 are not stored in Git. The OWT adapters and the baseline/NP puzzle adapters are
 also included, with their original vendored source and licenses.

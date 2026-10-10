@@ -18,7 +18,7 @@ class PuzzleDataCursor:
     def __init__(self,*args,**kwargs):
         super().__init__(*args,**kwargs)
         self._data_epoch=0;self._data_rows=0;self._data_batches=0;self._total_data_batches=0
-        self._resume_cursor=None;self._resume_rng=None;self._loader_generator=None;self._rng_restored=False
+        self._resume_cursor=None;self._resume_rng=None;self._loader_generator=None;self._rng_restored=False;self._batch_change=None
 
     def training_step(self,batch,batch_idx):
         loss=super().training_step(batch,batch_idx)
@@ -38,7 +38,9 @@ class PuzzleDataCursor:
         current=dict(batch=int(self.config.loader.batch_size),global_batch=int(self.config.loader.global_batch_size),
             devices=int(self.config.trainer.devices),accumulation=int(self.config.trainer.accumulate_grad_batches))
         # Evaluation may use a different batch size; model signature still checks architecture.
-        if self.config.mode=='train' and metadata['batch_policy']!=current:raise ValueError('Resume requires the original batch and device policy')
+        if self.config.mode=='train':
+            from puzzle_recurrence.batch_change import prepare_batch_change
+            checkpoint,self._batch_change=prepare_batch_change(checkpoint,current,bool(self.config.get('puzzle_allow_microbatch_change',False)))
         super().on_load_checkpoint(checkpoint)
         self._resume_cursor=metadata['cursor'];self._sampler_seed=metadata['sampler_seed']
         states=checkpoint['puzzle_rng_by_rank'];self._resume_rng=states[int(self.global_rank)]
@@ -47,6 +49,10 @@ class PuzzleDataCursor:
 
     def on_train_start(self):
         if self.ema:self.ema.move_shadow_params_to_device(self.device)
+        if self._batch_change and self.trainer.is_global_zero:
+            from puzzle_recurrence.results import atomic_json
+            from pathlib import Path
+            atomic_json(Path(self.config.checkpointing.save_dir)/('batch-change-step'+str(self._batch_change['step'])+'.json'),self._batch_change)
         loaders=[]
         for old in self.trainer.fit_loop._combined_loader.flattened:
             cursor=self._resume_cursor or dict(epoch=int(self.trainer.current_epoch),rows=0)
