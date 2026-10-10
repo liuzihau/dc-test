@@ -17,7 +17,7 @@ def checkpoint_info(path):
     payload=torch.load(path,map_location='cpu',weights_only=False,mmap=True)
     metadata=payload['puzzle_data_cursor']
     return dict(path=str(Path(path).resolve()),step=int(payload['global_step']),cursor=metadata['cursor'],
-        batch_policy=metadata['batch_policy'],variant=metadata['variant'])
+        batch_policy=metadata['batch_policy'],variant=metadata['variant'],task=metadata.get('task'))
 
 def checkpoints(run):
     paths={p.resolve() for p in (Path(run)/'checkpoints').glob('*.ckpt')}

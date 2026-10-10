@@ -8,11 +8,62 @@ import subprocess
 import sys
 import time
 from puzzle_recurrence.devices import selected_gpu_ids
-from puzzle_recurrence.schedule import TASKS,milestones,latest_checkpoint,checkpoint_at,paired_microbatch
+from puzzle_recurrence.schedule import TASKS,milestones,latest_checkpoint,checkpoint_at,checkpoint_info,paired_microbatch
 from puzzle_recurrence.results import atomic_json,record_generation,history
 
 ROOT=Path(__file__).resolve().parents[1]
 VARIANTS=('trajectory_attention','trajectory_recurrent')
+
+
+def initial_checkpoints(specifications,tasks):
+    """Validate all requested initial evaluations before launching any GPU work."""
+    result={task:[] for task in tasks};seen=set()
+    for task,variant,path in specifications:
+        if task not in result or variant not in VARIANTS:
+            raise ValueError('Initial evaluation requires a selected task and a paired variant')
+        info=checkpoint_info(Path(path).expanduser())
+        expected_task='sudoku-puzzle' if task=='sudoku' else 'zebra'
+        if info['variant']!=variant or info['task']!=expected_task:
+            raise ValueError('Initial checkpoint belongs to another task or variant: '+path)
+        epoch,remainder=divmod(info['step'],TASKS[task]['steps_per_epoch'])
+        if epoch<1 or remainder or info['cursor']['epoch']!=epoch or info['cursor']['rows'] or info['cursor']['batches']:
+            raise ValueError('Initial evaluation requires a completed epoch checkpoint: '+path)
+        key=(task,variant,epoch)
+        if key in seen:raise ValueError('Duplicate initial checkpoint evaluation')
+        seen.add(key);result[task].append(dict(variant=variant,epoch=epoch,checkpoint=info))
+    return result
+
+
+def evaluation_plan(task,root,variant,ids,epoch,info,workers):
+    generation=root/variant/'generation'/f'epoch-{epoch:03d}'
+    complete=generation/'complete.json'
+    if complete.exists():
+        record=json.loads(complete.read_text())
+        if record['step']!=info['step'] or Path(record['checkpoint']).resolve()!=Path(info['path']).resolve():
+            raise ValueError('Existing evaluation uses a different checkpoint: '+str(complete))
+        return None
+    cmd=[sys.executable,'-u','-m','puzzle_recurrence.entrypoint','--task',task,'--variant',variant,'--stage','evaluate',
+        '--resume',info['path'],'--run',str(generation),'--eval-batches','10','--eval-batch-size','128','--workers',str(workers)]
+    return dict(variant=variant,gpus=','.join(ids),command=cmd,run=str(generation))
+
+
+def evaluate_checkpoints(task,root,pairs,records,workers,stage='generation'):
+    """Group equal epochs on disjoint pairs. Failures stop before training."""
+    for epoch in sorted({r['epoch'] for r in records}):
+        plans=[];receipts=[]
+        for record in records:
+            if record['epoch']!=epoch:continue
+            variant=record['variant'];info=record['checkpoint']
+            plan=evaluation_plan(task,root,variant,pairs[VARIANTS.index(variant)],epoch,info,workers)
+            if plan:
+                plans.append(plan);receipts.append((Path(plan['run']),info))
+        if plans:
+            atomic_json(root/'current.json',dict(stage=stage,epoch=epoch,step=epoch*TASKS[task]['steps_per_epoch'],controller_pid=os.getpid()))
+            run_parallel(plans,[Path(p['run'])/'generation.log' for p in plans],ROOT,root/'pair.json')
+            for generation,info in receipts:record_generation(generation,epoch,info['step'],info['path'])
+    history(root)
+    from puzzle_recurrence.monitor import refresh
+    refresh(root,task)
 
 
 def commands(task,pairs,microbatch,workers,root,resume=False,target_steps=None,allow_microbatch_change=False,sources=None):
@@ -67,7 +118,10 @@ def main():
     p.add_argument('--evaluate',action='store_true',default=True,help='Generation evaluation is enabled by default')
     p.add_argument('--no-evaluate',action='store_false',dest='evaluate')
     p.add_argument('--evaluation-every',type=int,default=3);p.add_argument('--epochs',type=int)
+    p.add_argument('--initial-evaluation',nargs=3,action='append',default=[],metavar=('TASK','VARIANT','CHECKPOINT'),
+        help='Evaluate a saved epoch checkpoint before training; repeat for each checkpoint, including backups')
     args=p.parse_args()
+    if args.initial_evaluation and (not args.resume or not args.evaluate):p.error('Initial evaluation requires --resume and enabled evaluation')
     def stop(signum,frame):raise KeyboardInterrupt('Pair runner stopped')
     signal.signal(signal.SIGTERM,stop)
     pairs=[selected_gpu_ids(args.attention_gpus),selected_gpu_ids(args.recurrent_gpus)]
@@ -75,11 +129,24 @@ def main():
     if args.microbatch<1 or 512%(2*args.microbatch):p.error('Global batch512 must divide by 2*microbatch')
     if len(set(args.tasks))!=len(args.tasks):p.error('Each task can appear once')
     output=args.output_root.resolve()
+    initial=initial_checkpoints(args.initial_evaluation,args.tasks)
     if args.dry_run:
-        print(json.dumps([dict(task=task,epochs=milestones(args.epochs or TASKS[task]['epochs'],args.evaluation_every),
-            arms=commands(task,pairs,args.microbatch,args.workers,output,args.resume,
-                milestones(args.epochs or TASKS[task]['epochs'],args.evaluation_every)[0]*TASKS[task]['steps_per_epoch'],
-                args.allow_microbatch_change)) for task in args.tasks],indent=2));return
+        preview=[]
+        for task in args.tasks:
+            root=output/task/'three-state-ablation'
+            planned=milestones(args.epochs or TASKS[task]['epochs'],args.evaluation_every)
+            latest=[latest_checkpoint(root/v) for v in VARIANTS] if args.resume else [None,None]
+            batch,reason=paired_microbatch(args.microbatch,latest);next_training=[]
+            for index,info in enumerate(latest):
+                epoch=next((e for e in planned if info is None or info['step']<e*TASKS[task]['steps_per_epoch']),None)
+                if epoch is not None:
+                    plan=commands(task,pairs,batch,args.workers,output,target_steps=epoch*TASKS[task]['steps_per_epoch'],
+                        allow_microbatch_change=args.allow_microbatch_change,sources=latest)[index]
+                    next_training.append(dict(completed_epoch_target=epoch,**plan))
+            preview.append(dict(task=task,initial_evaluations=[evaluation_plan(task,root,
+                r['variant'],pairs[VARIANTS.index(r['variant'])],r['epoch'],r['checkpoint'],args.workers) for r in initial[task]],
+                epochs=planned,resume_checkpoints=latest,next_training=next_training,microbatch_reason=reason))
+        print(json.dumps(preview,indent=2));return
     for task in args.tasks:
         root=output/task/'three-state-ablation';runs=[root/v for v in VARIANTS]
         if not args.resume and any(run.exists() for run in runs):raise FileExistsError('Choose --resume or a fresh --output-root')
@@ -87,7 +154,19 @@ def main():
         latest=[latest_checkpoint(run) for run in runs]
         if args.resume and any(run.exists() and info is None for run,info in zip(runs,latest)):
             raise FileNotFoundError('An existing arm has no checkpoint; preserve it and use a fresh output root')
+        if initial[task]:
+            if any(info is None for info in latest):raise FileNotFoundError('Initial evaluations require both latest training checkpoints')
+            if any(r['checkpoint']['step']>latest[VARIANTS.index(r['variant'])]['step'] for r in initial[task]):
+                raise ValueError('Initial evaluation checkpoint is newer than the training resume checkpoint')
+            budget=(args.epochs or TASKS[task]['epochs'])*TASKS[task]['steps_per_epoch']
+            if any(info['step']>budget for info in latest):raise ValueError('Total epoch budget precedes a latest resume checkpoint')
+            evaluate_checkpoints(task,root,pairs,initial[task],args.workers,stage='initial_generation')
+            # Evaluation checkpoints are never used as training resume sources.
         planned=milestones(args.epochs or TASKS[task]['epochs'],args.evaluation_every)
+        if initial[task]:
+            # Historical checkpoints were explicitly selected above. Continue
+            # the absolute schedule from the earliest current training state.
+            planned=[e for e in planned if e*TASKS[task]['steps_per_epoch']>=min(info['step'] for info in latest)]
         for epoch in planned:
             target=epoch*TASKS[task]['steps_per_epoch']
             actual_batch,reason=paired_microbatch(args.microbatch,latest)
@@ -104,7 +183,7 @@ def main():
                 latest=[latest_checkpoint(run) for run in runs]
                 if any(info is None or info['step']<target for info in latest):raise RuntimeError('Chunk did not reach its milestone')
             if args.evaluate:
-                evaluations=[];logs=[];receipts=[]
+                records=[]
                 for variant,run,ids in zip(VARIANTS,runs,pairs):
                     generation=run/'generation'/f'epoch-{epoch:03d}'
                     if (generation/'complete.json').exists():continue
@@ -113,18 +192,8 @@ def main():
                         # Never label a newer checkpoint as an earlier epoch.
                         print(f'{variant}: epoch{epoch} checkpoint unavailable; no retrospective accuracy is invented.',flush=True)
                         continue
-                    generation.mkdir(parents=True,exist_ok=True)
-                    cmd=[sys.executable,'-u','-m','puzzle_recurrence.entrypoint','--task',task,'--variant',variant,'--stage','evaluate',
-                        '--resume',info['path'],'--run',str(generation),'--eval-batches','10','--eval-batch-size','128','--workers',str(args.workers)]
-                    evaluations.append(dict(variant=variant,gpus=','.join(ids),command=cmd,run=str(generation)))
-                    logs.append(generation/'generation.log');receipts.append((generation,info['path']))
-                if evaluations:
-                    atomic_json(root/'current.json',dict(stage='generation',epoch=epoch,step=target,controller_pid=os.getpid()))
-                    run_parallel(evaluations,logs,ROOT,root/'pair.json')
-                    for generation,checkpoint in receipts:record_generation(generation,epoch,target,checkpoint)
-                history(root)
-                from puzzle_recurrence.monitor import refresh
-                refresh(root,task)
+                    records.append(dict(variant=variant,epoch=epoch,checkpoint=info))
+                evaluate_checkpoints(task,root,pairs,records,args.workers)
                 print(f'{task}: epoch{epoch} generation metrics saved.',flush=True)
         atomic_json(root/'current.json',dict(stage='complete',epochs=planned[-1],controller_pid=os.getpid()))
         atomic_json(root/'pair-complete.json',dict(task=task,epochs=planned,variants=list(VARIANTS)))

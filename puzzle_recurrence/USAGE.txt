@@ -149,3 +149,32 @@ Old queues had final-only evaluation and kept only recent checkpoints.
 Missing older three-epoch checkpoints cannot produce retrospective metrics.
 The updated queue records only exact checkpoint epochs; later checkpoints
 are never substituted for an earlier epoch's accuracy.
+
+Initial evaluations before resuming the current runs:
+  Wait for RM filename epoch7 (8 completed epochs), then stop the old queue.
+  Preserve attention filename epoch6; recent-checkpoint retention may delete it.
+  git pull --ff-only
+  python -m puzzle_recurrence.resume_with_evaluation --task sudoku --attention-epoch6 /absolute/backup/epoch6.ckpt --dry-run
+  python -m puzzle_recurrence.resume_with_evaluation --task sudoku --attention-epoch6 /absolute/backup/epoch6.ckpt
+  Replace --task sudoku with --task zebra when resuming that dataset.
+  Use --output-root /absolute/outputs if the runs use another location.
+  This script evaluates filename epoch6 in BOTH arms (7 completed epochs),
+  then attention filename epoch8 (9 completed epochs), before any training.
+  It finds RM epoch6 and attention epoch8 from checkpoint metadata, not filenames.
+  Use --recurrent-epoch6 PATH or --attention-epoch8 PATH for other backup paths.
+  Missing or wrong checkpoints stop the script before GPU work.
+  Each initial evaluation uses 1,280 puzzles and saves normal generation metrics.
+  Successful completed evaluations are skipped on a retry. Evaluation failures
+  prevent training from starting. Original checkpoint files are preserved.
+  Training resumes each arm's latest checkpoint: in the current plan attention
+  filename9 (10 completed epochs), RM filename7 (8 completed epochs).
+  RM first finishes completed epoch9 and is evaluated there. Attention resumes
+  to completed epoch12 after only two more epochs; RM continues9->12.
+  Subsequent evaluations occur at completed epochs12,15,... plus the final.
+  The schedule uses absolute completed epochs, not elapsed epochs since restart.
+  Microbatch defaults64; both arms keep32 while catching up to completed12,
+  then switch together to64 for the following chunk. Effective batch remains512.
+  --epochs sets the total budget; it does not add epochs to the saved checkpoint.
+  The ordinary run_pair also accepts repeated explicit checkpoint requests:
+    --initial-evaluation TASK trajectory_attention /absolute/checkpoint.ckpt
+    --initial-evaluation TASK trajectory_recurrent /absolute/checkpoint.ckpt
