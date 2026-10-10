@@ -86,6 +86,16 @@ def commands(task,pairs,microbatch,workers,root,resume=False,target_steps=None,a
 
 def run_parallel(plans,logs,root,status):
     children=[];streams=[]
+    def failure():
+        reports=[]
+        for plan,path,child in zip(plans,logs,children):
+            code=child.poll()
+            if code in (None,0):continue
+            with Path(path).open('rb') as source:
+                source.seek(0,2);source.seek(max(0,source.tell()-8192))
+                tail='\n'.join(source.read().decode('utf-8',errors='replace').splitlines()[-30:])
+            reports.append(f'{plan["variant"]} exited with code{code}; log {path}\n{tail}')
+        return RuntimeError('Paired job failed:\n'+'\n'.join(reports))
     try:
         for plan,path in zip(plans,logs):
             path.parent.mkdir(parents=True,exist_ok=True);stream=path.open('a');streams.append(stream)
@@ -95,9 +105,9 @@ def run_parallel(plans,logs,root,status):
             children.append(child);print(plan['variant']+' on GPUs '+plan['gpus']+'; log '+str(path),flush=True)
         atomic_json(status,dict(arms=plans,pids=[c.pid for c in children],controller_pid=os.getpid()))
         while any(c.poll() is None for c in children):
-            if any(c.poll() not in (None,0) for c in children):raise RuntimeError('One arm failed; inspect its log')
+            if any(c.poll() not in (None,0) for c in children):raise failure()
             time.sleep(2)
-        if any(c.returncode for c in children):raise RuntimeError('A paired arm failed')
+        if any(c.returncode for c in children):raise failure()
     finally:
         for child in children:
             if child.poll() is None:

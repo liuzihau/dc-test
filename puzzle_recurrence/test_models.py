@@ -201,6 +201,37 @@ def test_control_checkpoint_cannot_resume_as_recurrent(tmp_path):
 
 
 @pytest.mark.parametrize('task',['sudoku','zebra'])
+@pytest.mark.parametrize('variant',['mdm','mdm_np','trajectory_attention','trajectory_recurrent'])
+def test_author_evaluation_loader_restores_existing_checkpoint(tmp_path,task,variant):
+    # Trainer.fit restores onto an existing instance; generation constructs a
+    # new one through Lightning.load_from_checkpoint. Exercise that real path.
+    model=make(task,variant);trainer=fit(model,1,Trace())
+    path=tmp_path/'existing.ckpt';trainer.save_checkpoint(path)
+    payload=torch.load(path,weights_only=False)
+    assert 'vocab_size' in payload['hyper_parameters']
+    eval_config=copy.deepcopy(model.config);eval_config.mode='completions'
+    eval_config.eval.checkpoint_path=str(path)
+    eval_config.loader.batch_size=eval_config.loader.global_batch_size=128
+    eval_config.trainer.devices=1;eval_config.trainer.accumulate_grad_batches=1
+    import main as upstream
+    restored=upstream._load_from_checkpoint(type(model),eval_config,model.tokenizer)
+    for name,value in model.state_dict().items():
+        torch.testing.assert_close(value,restored.state_dict()[name],rtol=0,atol=0)
+    assert restored.vocab_size==model.vocab_size
+    assert restored.ema.num_updates==model.ema.num_updates
+    for a,b in zip(model.ema.shadow_params,restored.ema.shadow_params):
+        torch.testing.assert_close(a,b,rtol=0,atol=0)
+    assert restored._resume_cursor==payload['puzzle_data_cursor']['cursor']
+    inputs=batch(restored)
+    predictions,stats=restored.restore_model_and_complete(inputs,num_steps=8,return_stats=True)
+    assert predictions.shape==inputs['input_ids'].shape and stats['duration']>=0
+    assert torch.equal(predictions[:,:4],inputs['input_ids'][:,:4])
+    # EMA generation restores ordinary weights afterward.
+    for name,value in model.state_dict().items():
+        torch.testing.assert_close(value,restored.state_dict()[name],rtol=0,atol=0)
+
+
+@pytest.mark.parametrize('task',['sudoku','zebra'])
 def test_validation_metrics_and_rng_isolation(task):
     model=make(task).eval();b=batch(model)
     model._trainer=SimpleNamespace(sanity_checking=True,global_rank=0,global_step=0)

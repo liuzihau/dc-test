@@ -107,3 +107,24 @@ def test_dry_run_reports_two_remaining_epochs_for_attention(tmp_path,monkeypatch
     assert len(preview['initial_evaluations'])==3
     assert [r['completed_epoch_target'] for r in preview['next_training']]==[12,9]
     assert [r['cursor']['epoch'] for r in preview['resume_checkpoints']]==[10,8]
+
+
+def test_checkpoint_ties_prefer_periodic_resume_file(tmp_path):
+    from puzzle_recurrence.schedule import latest_checkpoint,checkpoint_at
+    run=tmp_path/'trajectory_recurrent'
+    periodic=save_checkpoint(run/'checkpoints/7-28200.ckpt','sudoku','trajectory_recurrent',8)
+    save_checkpoint(run/'checkpoints/best.ckpt','sudoku','trajectory_recurrent',8)
+    assert latest_checkpoint(run)['path']==str(periodic.resolve())
+    assert checkpoint_at(run,28200)['path']==str(periodic.resolve())
+    # The maximum optimizer step still takes priority over filename preference.
+    best=save_checkpoint(run/'checkpoints/best.ckpt','sudoku','trajectory_recurrent',9)
+    assert latest_checkpoint(run)['path']==str(best.resolve())
+
+
+def test_failed_child_reports_actual_traceback(tmp_path):
+    plan=dict(variant='trajectory_attention',gpus='0,1',
+        command=[sys.executable,'-c',"raise TypeError('unexpected keyword argument vocab_size')"])
+    log=tmp_path/'generation.log'
+    with pytest.raises(RuntimeError,match='unexpected keyword argument vocab_size') as error:
+        run_pair.run_parallel([plan],[log],tmp_path,tmp_path/'pair.json')
+    assert 'trajectory_attention' in str(error.value) and str(log) in str(error.value)

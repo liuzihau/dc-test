@@ -15,8 +15,11 @@ class ResumeSampler(DistributedSampler):
     def __iter__(self):return itertools.islice(super().__iter__(),self.resume_rows if self.epoch==self.resume_epoch else 0,None)
 
 class PuzzleDataCursor:
-    def __init__(self,*args,**kwargs):
-        super().__init__(*args,**kwargs)
+    def __init__(self,config,tokenizer):
+        # Lightning filters saved hyperparameters against this signature.
+        # TrainerBase also saves vocab_size; our author adapters derive it
+        # from the tokenizer and do not accept that constructor argument.
+        super().__init__(config,tokenizer)
         self._data_epoch=0;self._data_rows=0;self._data_batches=0;self._total_data_batches=0
         self._resume_cursor=None;self._resume_rng=None;self._loader_generator=None;self._rng_restored=False;self._batch_change=None
 

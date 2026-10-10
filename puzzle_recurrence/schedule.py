@@ -21,14 +21,17 @@ def checkpoint_info(path):
 
 def checkpoints(run):
     paths={p.resolve() for p in (Path(run)/'checkpoints').glob('*.ckpt')}
-    return sorted((checkpoint_info(p) for p in paths),key=lambda r:r['step'])
+    # A validation-best checkpoint can have the same update as the periodic
+    # resume checkpoint. Prefer the periodic file, with deterministic ties.
+    return sorted((checkpoint_info(p) for p in paths),
+        key=lambda r:(r['step'],Path(r['path']).name!='best.ckpt',r['path']))
 
 def latest_checkpoint(run):
     records=checkpoints(run)
     return records[-1] if records else None
 
 def checkpoint_at(run,step):
-    return next((r for r in checkpoints(run) if r['step']==step),None)
+    return next((r for r in reversed(checkpoints(run)) if r['step']==step),None)
 
 def paired_microbatch(requested,latest):
     existing=[r for r in latest if r is not None]
