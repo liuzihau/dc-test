@@ -178,3 +178,26 @@ Initial evaluations before resuming the current runs:
   The ordinary run_pair also accepts repeated explicit checkpoint requests:
     --initial-evaluation TASK trajectory_attention /absolute/checkpoint.ckpt
     --initial-evaluation TASK trajectory_recurrent /absolute/checkpoint.ckpt
+
+Four-GPU serial queue (alternates the two trajectory arms):
+  Stop the old pair runner with Ctrl+C before switching queues.
+  git pull --ff-only
+  python -m puzzle_recurrence.run_serial --tasks sudoku zebra --resume --allow-device-change --microbatch 64 --dry-run
+  python -m puzzle_recurrence.run_serial --tasks sudoku zebra --resume --allow-device-change --microbatch 64
+  Use --tasks sudoku to run only the currently active dataset.
+  Each model trains alone on GPUs0,1,2,3 to its next absolute evaluation epoch.
+  It is evaluated before the next model starts. With current completed epochs
+  attention10/RM8, training order is RM->9, attention->12, RM->12,
+  attention->15, RM->15,... . Already saved accuracy evaluations are reused.
+  After Sudoku completes, the queue runs Zebra in the same way.
+  Global batch512 = microbatch64 x four devices x accumulation2.
+  Both models can switch device policy independently; there is no paired barrier.
+  Device-count migration requires a completed data-epoch checkpoint. Stop now
+  to restore that latest boundary (unsaved work is repeated), or finish the
+  active epoch before stopping. Checkpoints and previous metrics are preserved.
+  Weights, Adam, EMA and scheduler are restored; the next data epoch uses a
+  four-rank sampler. Existing rank RNG states are restored, and additional
+  ranks receive reproducible independent streams. Subsequent corruption draws
+  change after resizing; this is not bitwise replay of a two-GPU continuation.
+  Generation keeps the original single-GPU author evaluation on 1,280 puzzles.
+  Existing monitor commands and figure locations remain valid.

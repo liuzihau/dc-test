@@ -24,7 +24,7 @@ def checkpoints(run):
     # A validation-best checkpoint can have the same update as the periodic
     # resume checkpoint. Prefer the periodic file, with deterministic ties.
     return sorted((checkpoint_info(p) for p in paths),
-        key=lambda r:(r['step'],Path(r['path']).name!='best.ckpt',r['path']))
+        key=lambda r:(r['step'],not(r['cursor']['rows'] or r['cursor']['batches']),Path(r['path']).name!='best.ckpt',r['path']))
 
 def latest_checkpoint(run):
     records=checkpoints(run)

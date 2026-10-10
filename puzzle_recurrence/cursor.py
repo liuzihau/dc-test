@@ -7,6 +7,15 @@ from torch.utils.data import DataLoader,DistributedSampler
 
 SCHEMA='puzzle_consumed_cursor_v1'
 
+
+def added_rank_rng(seed,step,rank):
+    """Independent new-rank streams without changing any global RNG state."""
+    seed=(int(seed)+910003+1000003*int(rank)+9176*int(step))%(2**32)
+    return dict(python=random.Random(seed).getstate(),numpy=np.random.RandomState(seed).get_state(),
+        torch=torch.Generator().manual_seed(seed).get_state(),
+        cuda=torch.Generator(device='cuda').manual_seed(seed).get_state() if torch.cuda.is_available() else None,
+        loader=torch.Generator().manual_seed(seed+701001).get_state())
+
 class ResumeSampler(DistributedSampler):
     def __init__(self,*args,resume_epoch=0,resume_rows=0,**kwargs):
         super().__init__(*args,**kwargs)
@@ -43,10 +52,12 @@ class PuzzleDataCursor:
         # Evaluation may use a different batch size; model signature still checks architecture.
         if self.config.mode=='train':
             from puzzle_recurrence.batch_change import prepare_batch_change
-            checkpoint,self._batch_change=prepare_batch_change(checkpoint,current,bool(self.config.get('puzzle_allow_microbatch_change',False)))
+            checkpoint,self._batch_change=prepare_batch_change(checkpoint,current,bool(self.config.get('puzzle_allow_microbatch_change',False)),
+                bool(self.config.get('puzzle_allow_device_change',False)))
         super().on_load_checkpoint(checkpoint)
         self._resume_cursor=metadata['cursor'];self._sampler_seed=metadata['sampler_seed']
-        states=checkpoint['puzzle_rng_by_rank'];self._resume_rng=states[int(self.global_rank)]
+        states=checkpoint['puzzle_rng_by_rank'];rank=int(self.global_rank)
+        self._resume_rng=states[rank] if rank<len(states) else added_rank_rng(self.config.seed,checkpoint['global_step'],rank)
         for field,name in [('epoch','_data_epoch'),('rows','_data_rows'),('batches','_data_batches'),('total_batches','_total_data_batches')]:
             setattr(self,name,int(self._resume_cursor[field]))
 

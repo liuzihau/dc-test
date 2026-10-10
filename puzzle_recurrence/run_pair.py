@@ -66,14 +66,16 @@ def evaluate_checkpoints(task,root,pairs,records,workers,stage='generation'):
     refresh(root,task)
 
 
-def commands(task,pairs,microbatch,workers,root,resume=False,target_steps=None,allow_microbatch_change=False,sources=None):
+def commands(task,pairs,microbatch,workers,root,resume=False,target_steps=None,allow_microbatch_change=False,sources=None,
+             devices=2,allow_device_change=False):
     result=[]
     for index,(variant,ids) in enumerate(zip(VARIANTS,pairs)):
         run=root/task/'three-state-ablation'/variant
         cmd=[sys.executable,'-u','-m','puzzle_recurrence.entrypoint','--task',task,'--variant',variant,
-             '--stage','train','--devices','2','--microbatch',str(microbatch),'--workers',str(workers),'--run',str(run)]
+             '--stage','train','--devices',str(devices),'--microbatch',str(microbatch),'--workers',str(workers),'--run',str(run)]
         if target_steps is not None:cmd += ['--target-steps',str(target_steps)]
         if allow_microbatch_change:cmd += ['--allow-microbatch-change']
+        if allow_device_change:cmd += ['--allow-device-change']
         if sources is not None:
             if sources[index]:cmd += ['--resume',sources[index]['path']]
         elif resume and run.exists():
